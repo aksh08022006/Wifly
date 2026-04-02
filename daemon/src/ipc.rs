@@ -54,30 +54,86 @@ async fn classify_packet(
     }
 }
 
-/// Handle a single client connection (kernel callout or UI)
-/// In production, this would handle a Windows named pipe connection
-#[allow(dead_code)]
-async fn handle_client_connection(
-    stream: tokio::io::DuplexStream,
+/// Run the IPC server that listens for messages from the kernel callout and UI
+/// Accepts multiple concurrent clients and handles packet classification
+pub async fn run_pipe_server(
+    registry: Arc<Mutex<DeviceRegistry>>,
+) -> Result<(), DaemonError> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    
+    let pipe_name = proto::NETSHAPER_PIPE_NAME;
+    tracing::info!("IPC server listening on {}", pipe_name);
+    
+    loop {
+        // Create a new server instance for each connection
+        let server = ServerOptions::new()
+            .create(pipe_name)
+            .map_err(|e| {
+                tracing::error!("Failed to create named pipe server: {}", e);
+                DaemonError::Io(e)
+            })?;
+        
+        // Wait for a client to connect (blocking until connection)
+        server.connect().await.map_err(|e| {
+            tracing::error!("Failed to accept client connection: {}", e);
+            DaemonError::Io(e)
+        })?;
+        
+        let registry_clone = registry.clone();
+        
+        // Spawn a task to handle this client connection
+        // (allows multiple concurrent clients)
+        tokio::spawn(async move {
+            match handle_pipe_client(server, registry_clone).await {
+                Ok(_) => tracing::debug!("Client disconnected"),
+                Err(e) => tracing::warn!("Error handling client: {}", e),
+            }
+        });
+    }
+}
+
+/// Handle a single named pipe client connection
+/// Reads PacketMetadata, classifies, and sends back PacketDecision
+async fn handle_pipe_client(
+    mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     registry: Arc<Mutex<DeviceRegistry>>,
 ) -> Result<(), DaemonError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     
-    let mut stream = stream;
     loop {
         // Read message size (little-endian u32)
         let mut size_bytes = [0u8; 4];
-        match stream.read_exact(&mut size_bytes).await {
+        match pipe.read_exact(&mut size_bytes).await {
             Ok(_) => {},
-            Err(_) => break, // Connection closed or error
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // Client disconnected gracefully
+                break;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read message size: {}", e);
+                return Err(DaemonError::Io(e));
+            }
         }
         
         let size = u32::from_le_bytes(size_bytes) as usize;
+        
+        // Sanity check: max 64KB message
+        if size > 65536 {
+            tracing::warn!("Message size too large: {} bytes", size);
+            break;
+        }
+        
         let mut buffer = vec![0u8; size];
         
-        match stream.read_exact(&mut buffer).await {
+        match pipe.read_exact(&mut buffer).await {
             Ok(_) => {},
-            Err(_) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read message body: {}", e);
+                return Err(DaemonError::Io(e));
+            }
         }
         
         // Deserialize PacketMetadata
@@ -92,7 +148,7 @@ async fn handle_client_connection(
         // Classify the packet
         let decision = classify_packet(&metadata, &registry).await;
         
-        // Serialize PacketDecision and send back
+        // Serialize PacketDecision
         let response = match bincode::serialize(&decision) {
             Ok(r) => r,
             Err(e) => {
@@ -101,38 +157,19 @@ async fn handle_client_connection(
             }
         };
         
-        // Write response size and data
-        let size = (response.len() as u32).to_le_bytes();
-        if let Err(e) = stream.write_all(&size).await {
+        // Send response size + data
+        let size_bytes = (response.len() as u32).to_le_bytes();
+        if let Err(e) = pipe.write_all(&size_bytes).await {
             tracing::warn!("Failed to write response size: {}", e);
-            break;
+            return Err(DaemonError::Io(e));
         }
         
-        if let Err(e) = stream.write_all(&response).await {
+        if let Err(e) = pipe.write_all(&response).await {
             tracing::warn!("Failed to write response: {}", e);
-            break;
+            return Err(DaemonError::Io(e));
         }
     }
     
-    Ok(())
-}
-
-/// Run the IPC server that listens for messages from the kernel callout and UI
-pub async fn run_pipe_server(
-    _registry: Arc<Mutex<DeviceRegistry>>,
-) -> Result<(), DaemonError> {
-    // For development/testing, use a simple in-memory channel-based listener
-    // In production, this would use Windows named pipes via tokio::net::windows::named_pipe
-    
-    tracing::info!("IPC server listening on {}", proto::NETSHAPER_PIPE_NAME);
-    
-    // Current implementation: wait for shutdown signal
-    // TODO: Implement proper Windows named pipe listener
-    // TODO: Accept multiple concurrent clients (one per kernel callout instance)
-    
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("IPC server shutting down");
-
     Ok(())
 }
 
