@@ -1,7 +1,6 @@
 /// NetShaper IPC Protocol
 /// =====================
 /// This is the contract between all crates. CRITICAL: Any change requires both Aksh and Saksham to review.
-
 use std::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 

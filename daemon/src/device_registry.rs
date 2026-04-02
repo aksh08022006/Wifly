@@ -1,10 +1,9 @@
+use crate::bucket::DeviceBucket;
 /// Device Registry
 /// ================
 /// Manages all enrolled devices and their bandwidth buckets
-
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use crate::bucket::DeviceBucket;
 
 /// Registry of all managed devices
 pub struct DeviceRegistry {
