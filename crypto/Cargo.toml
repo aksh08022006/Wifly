@@ -1,0 +1,17 @@
+[package]
+name = "crypto"
+version = "0.1.0"
+edition = "2021"
+authors = ["Aksh"]
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+rcgen = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio-rustls = "0.25"
+proto = { path = "../proto" }
+
+[dev-dependencies]
+tokio = { version = "1.36", features = ["full"] }
