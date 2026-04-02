@@ -54,6 +54,30 @@ impl DeviceRegistry {
     pub fn count(&self) -> usize {
         self.devices.len()
     }
+
+    /// Get current usage for a device (bytes in active 1-second window)
+    pub fn get_current_usage(&self, ip: Ipv4Addr) -> u64 {
+        self.devices
+            .get(&ip)
+            .map(|b| b.get_current_usage())
+            .unwrap_or(0)
+    }
+
+    /// Get peak usage for a device
+    pub fn get_peak_usage(&self, ip: Ipv4Addr) -> u64 {
+        self.devices
+            .get(&ip)
+            .map(|b| b.get_peak_usage())
+            .unwrap_or(0)
+    }
+
+    /// Get total bytes consumed for a device
+    pub fn get_total_consumption(&self, ip: Ipv4Addr) -> u64 {
+        self.devices
+            .get(&ip)
+            .map(|b| b.get_total_consumption())
+            .unwrap_or(0)
+    }
 }
 
 impl Default for DeviceRegistry {
