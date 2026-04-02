@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{CreateFileA, OPEN_EXISTING, FILE_SHARE_NONE};
 use windows::Win32::Storage::FileSystem::{FILE_FLAG_NO_BUFFERING, FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+use windows::Win32::Storage::FileSystem::{WriteFile, ReadFile};
 use windows::core::s;
 
 /// Client for communicating with daemon over named pipe
@@ -52,30 +53,44 @@ impl PipeClient {
     /// Returns None if communication fails
     pub fn query_decision(&self, metadata: &PacketMetadata) -> Option<PacketDecision> {
         // Try to serialize the metadata
-        let _serialized = bincode::serialize(metadata).ok()?;
+        let serialized = bincode::serialize(metadata).ok()?;
 
         // Try to acquire the mutex without blocking (fail if another thread is writing)
-        let _handle_guard = self.handle.try_lock().ok()?;
+        let handle_guard = self.handle.try_lock().ok()?;
+        let handle = *handle_guard;
 
-        // Write metadata to pipe using unsafe file operations
-        let write_result: std::io::Result<usize> = {
-            // We can't directly use the HANDLE with std::fs::File
-            // For now, this is a simplified approach
-            // In production, we'd use windows::Win32::Storage::FileSystem::WriteFile
-            // directly with the HANDLE
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Simplified placeholder"))
-        };
+        // Write metadata to pipe
+        unsafe {
+            let write_result = WriteFile(
+                handle,
+                Some(serialized.as_slice()),
+                None,
+                None,
+            );
 
-        if write_result.is_err() {
-            return None;
+            if write_result.is_err() {
+                return None;
+            }
         }
 
-        // Read decision from pipe
-        let _buf = vec![0u8; 256];
-        
+        // Read decision from pipe (with fixed buffer size)
+        let mut response_buf = vec![0u8; 256];
+
+        unsafe {
+            let read_result = ReadFile(
+                handle,
+                Some(&mut response_buf[..]),
+                None,
+                None,
+            );
+
+            if read_result.is_err() {
+                return None;
+            }
+        }
+
         // Deserialize the decision
-        // For now, just return None since we haven't implemented actual I/O
-        None
+        bincode::deserialize(&response_buf).ok()
     }
 }
 
