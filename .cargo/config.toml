@@ -1,17 +1,16 @@
-# Cross-compilation configuration for Windows target from macOS
+# Cross-compilation configuration for Windows target
 # ================================================================
-# This allows building Windows binaries on macOS using xwin
+# When building on Windows natively: use default MSVC linker (link.exe)
+# When cross-compiling from macOS: uncomment lld-link config below
 
-[target.x86_64-pc-windows-msvc]
-# Use lld-link as the linker (from LLVM)
-linker = "lld-link"
+# [target.x86_64-pc-windows-msvc]
+# Use lld-link as the linker (from LLVM) - for macOS cross-compile only
+# linker = "lld-link"
 
-# Configure Windows SDK paths
+# Windows SDK paths for macOS cross-compilation
 # NOTE: You must run: xwin --accept-license splat --output ~/.xwin
-# before building for Windows target
-
-rustflags = [
-  "-C", "link-arg=/LIBPATH:$HOME/.xwin/crt/lib/x86_64",
-  "-C", "link-arg=/LIBPATH:$HOME/.xwin/sdk/lib/um/x86_64",
-  "-C", "link-arg=/LIBPATH:$HOME/.xwin/sdk/lib/ucrt/x86_64",
-]
+# rustflags = [
+#  "-C", "link-arg=/LIBPATH:$HOME/.xwin/crt/lib/x86_64",
+#   "-C", "link-arg=/LIBPATH:$HOME/.xwin/sdk/lib/um/x86_64",
+#   "-C", "link-arg=/LIBPATH:$HOME/.xwin/sdk/lib/ucrt/x86_64",
+# ]

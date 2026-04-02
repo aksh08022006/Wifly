@@ -2,7 +2,6 @@
 /// ====================================
 /// Runs a TLS server that handles device enrollment
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::CertBundle;
@@ -46,7 +45,7 @@ pub async fn run_consent_server(
     // Handle /accept and /decline POST endpoints
     // Persist enrolled devices to ~/.netshaper/devices.json
 
-    tracing::info!("Consent server would start on 0.0.0.0:7979");
+    // tracing::info!("Consent server would start on 0.0.0.0:7979");
     Ok(())
 }
 
