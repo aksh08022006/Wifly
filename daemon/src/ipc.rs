@@ -5,13 +5,16 @@
 use thiserror::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::io::AsyncWriteExt;
 use crate::DeviceRegistry;
-use proto::{PacketMetadata, PacketDecision};
+use proto::{PacketMetadata, PacketDecision, DaemonCommand};
 
 #[derive(Error, Debug)]
 pub enum DaemonError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }
 
 /// Handle a single packet classification request
@@ -132,10 +135,10 @@ pub async fn run_pipe_server(
 /// Respects shutdown signal for graceful termination
 async fn handle_pipe_client(
     mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
-    registry: Arc<Mutex<DeviceRegistry>>,
+    _registry: Arc<Mutex<DeviceRegistry>>,
     _shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(), DaemonError> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
     
     loop {
         // Read message size (little-endian u32)
@@ -190,28 +193,25 @@ async fn process_command(
         }
         DaemonCommand::ListDevices => {
             let reg = registry.lock().await;
-            let states = build_device_states(&reg);
             
-            // Convert DeviceState to DeviceInfo format for UI
-            let devices: Vec<(String, Option<String>, bool, String, u64, u64)> = states
+            // Convert devices to the expected format
+            let devices: Vec<(String, Option<String>, bool, String, u64, u64)> = reg
+                .list_devices()
                 .iter()
-                .map(|state| {
-                    let ip_str = state.ip.to_string();
-                    let approved = !state.is_blocked;
-                    let now = chrono::Utc::now().to_rfc3339();
+                .map(|ip| {
+                    let ip_str = ip.to_string();
+                    // Device is approved if it has non-zero bandwidth limit
+                    let bandwidth = reg.get_bucket(*ip).map(|b| b.allowed_bytes_per_sec).unwrap_or(0);
+                    let approved = bandwidth > 0;
+                    let now = format!("{:?}", std::time::SystemTime::now());
+                    let current = reg.get_current_usage(*ip);
                     
-                    (
-                        ip_str,
-                        state.hostname.clone(),
-                        approved,
-                        now,
-                        state.bytes_per_sec,
-                        state.current_usage,
-                    )
+                    (ip_str, None, approved, now, bandwidth, current)
                 })
                 .collect();
             
-            let response = bincode::serialize(&devices)?;
+            let response = bincode::serialize(&devices)
+                .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
             pipe.write_all(&response).await?;
             Ok(())
         }
@@ -222,7 +222,7 @@ async fn process_command(
             let peak_usage = reg.get_peak_usage(ip);
             let total_consumption = reg.get_total_consumption(ip);
             
-            if let Some(bucket) = reg.get_bucket(&ip) {
+            if let Some(bucket) = reg.get_bucket(ip) {
                 let stats = proto::DeviceStats {
                     ip,
                     current_usage,
@@ -230,7 +230,8 @@ async fn process_command(
                     total_consumption,
                     bandwidth_limit: bucket.allowed_bytes_per_sec,
                 };
-                let response = bincode::serialize(&stats)?;
+                let response = bincode::serialize(&stats)
+                    .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
                 pipe.write_all(&response).await?;
             }
             Ok(())
@@ -246,7 +247,7 @@ async fn process_command(
                 let peak_usage = reg.get_peak_usage(ip);
                 let total_consumption = reg.get_total_consumption(ip);
                 
-                if let Some(bucket) = reg.get_bucket(&ip) {
+                if let Some(bucket) = reg.get_bucket(ip) {
                     all_stats.push(proto::DeviceStats {
                         ip,
                         current_usage,
@@ -257,7 +258,8 @@ async fn process_command(
                 }
             }
             
-            let response = bincode::serialize(&all_stats)?;
+            let response = bincode::serialize(&all_stats)
+                .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
             pipe.write_all(&response).await?;
             Ok(())
         }
@@ -315,7 +317,8 @@ async fn process_packet(
     };
 
     // Send decision back to kernel callout
-    let response = bincode::serialize(&decision)?;
+    let response = bincode::serialize(&decision)
+        .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
     pipe.write_all(&response).await?;
 
     Ok(())
@@ -402,7 +405,8 @@ async fn process_unix_command(
                 }
             }
             
-            let response = bincode::serialize(&all_stats)?;
+            let response = bincode::serialize(&all_stats)
+                .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
             socket.write_all(&response).await?;
             Ok(())
         }
@@ -451,13 +455,19 @@ async fn process_unix_packet(
                 packet_id: metadata.packet_id,
             }
         }
-        
-        if let Err(e) = pipe.write_all(&response).await {
-            tracing::warn!("Failed to write response: {}", e);
-            return Err(DaemonError::Io(e));
+    } else {
+        // Device not enrolled - block by default for security
+        tracing::warn!("Dropping packet from unapproved device: {}", metadata.src_ip);
+        PacketDecision::Drop {
+            packet_id: metadata.packet_id,
         }
-    }
-    
+    };
+
+    // Send decision back to kernel callout
+    let response = bincode::serialize(&decision)
+        .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
+    socket.write_all(&response).await?;
+
     Ok(())
 }
 
