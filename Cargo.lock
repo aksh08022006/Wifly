@@ -515,6 +515,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "crossbeam-queue",
+ "crypto",
  "proto",
  "serde",
  "thiserror 1.0.69",

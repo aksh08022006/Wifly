@@ -1,10 +1,9 @@
 /// Integration tests for daemon
 /// Tests the full system working together: registry + buckets + scheduler
-
 use daemon::DeviceRegistry;
 use std::net::Ipv4Addr;
-use std::time::{Duration, Instant};
 use std::thread;
+use std::time::{Duration, Instant};
 
 #[test]
 fn test_multiple_devices_with_different_rates() {
@@ -15,17 +14,26 @@ fn test_multiple_devices_with_different_rates() {
     let ip2: Ipv4Addr = "192.168.1.101".parse().unwrap();
     let ip3: Ipv4Addr = "192.168.1.102".parse().unwrap();
 
-    registry.insert_device(ip1, 1_000_000);  // 1 MB/s
-    registry.insert_device(ip2, 5_000_000);  // 5 MB/s
-    registry.insert_device(ip3, 100_000);    // 100 KB/s
+    registry.insert_device(ip1, 1_000_000); // 1 MB/s
+    registry.insert_device(ip2, 5_000_000); // 5 MB/s
+    registry.insert_device(ip3, 100_000); // 100 KB/s
 
     // Verify all are registered
     assert_eq!(registry.count(), 3);
 
     // Verify each has the correct bandwidth
-    assert_eq!(registry.get_bucket(ip1).unwrap().allowed_bytes_per_sec, 1_000_000);
-    assert_eq!(registry.get_bucket(ip2).unwrap().allowed_bytes_per_sec, 5_000_000);
-    assert_eq!(registry.get_bucket(ip3).unwrap().allowed_bytes_per_sec, 100_000);
+    assert_eq!(
+        registry.get_bucket(ip1).unwrap().allowed_bytes_per_sec,
+        1_000_000
+    );
+    assert_eq!(
+        registry.get_bucket(ip2).unwrap().allowed_bytes_per_sec,
+        5_000_000
+    );
+    assert_eq!(
+        registry.get_bucket(ip3).unwrap().allowed_bytes_per_sec,
+        100_000
+    );
 }
 
 #[test]
@@ -35,11 +43,17 @@ fn test_update_bandwidth_dynamically() {
 
     // Add device at 1 MB/s
     registry.insert_device(ip, 1_000_000);
-    assert_eq!(registry.get_bucket(ip).unwrap().allowed_bytes_per_sec, 1_000_000);
+    assert_eq!(
+        registry.get_bucket(ip).unwrap().allowed_bytes_per_sec,
+        1_000_000
+    );
 
     // Update to 5 MB/s
     registry.update_bandwidth(ip, 5_000_000);
-    assert_eq!(registry.get_bucket(ip).unwrap().allowed_bytes_per_sec, 5_000_000);
+    assert_eq!(
+        registry.get_bucket(ip).unwrap().allowed_bytes_per_sec,
+        5_000_000
+    );
 
     // Update to 0 (block the device)
     registry.update_bandwidth(ip, 0);

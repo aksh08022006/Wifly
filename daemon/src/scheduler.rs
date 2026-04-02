@@ -1,18 +1,17 @@
+use crate::DeviceRegistry;
 /// Scheduler
 /// ==========
 /// Periodically refills token buckets and drains queues
-/// 
+///
 /// This task is the heart of the rate limiting system:
 /// 1. Wakes every 1ms
 /// 2. For each device, calls refill() to add tokens
 /// 3. Drains packets from each queue that now have tokens
 /// 4. In future, sends PacketDecision messages back to kernel
-
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
-use crate::DeviceRegistry;
 use tracing::{debug, warn};
 
 /// Run the packet scheduler task
@@ -20,7 +19,9 @@ use tracing::{debug, warn};
 /// 1. Lock registry
 /// 2. For each device: refill tokens and drain ready packets
 /// 3. In production: send PERMIT decisions back to kernel via IPC
-pub async fn run_scheduler(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_scheduler(
+    registry: Arc<Mutex<DeviceRegistry>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Scheduler started - refilling buckets every 1ms");
 
     let mut stats = SchedulerStats::new();
@@ -137,7 +138,7 @@ mod tests {
         let ip: Ipv4Addr = "192.168.1.100".parse().unwrap();
 
         registry.insert_device(ip, 100_000); // 100 KB/s
-        
+
         {
             let bucket = registry.get_bucket_mut(ip).unwrap();
             bucket.current_tokens = 1000.0; // 1 KB available
