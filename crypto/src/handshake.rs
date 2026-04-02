@@ -1,10 +1,9 @@
+use crate::CertBundle;
 /// Device Consent & Enrollment Server
 /// ====================================
 /// Runs a TLS server that handles device enrollment
-
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::CertBundle;
 
 /// Tracks enrolled device IPs
 pub struct EnrolledDevices {

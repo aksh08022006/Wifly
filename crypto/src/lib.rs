@@ -1,7 +1,6 @@
 /// Crypto Module
 /// ==============
 /// mTLS consent server and device enrollment
-
 pub mod cert;
 pub mod handshake;
 
