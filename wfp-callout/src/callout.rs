@@ -117,9 +117,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_ipv4_extraction() {
+        // Test IPv4 address extraction from u32
+        // 192.168.1.1 in network byte order: 0xC0A80101
+        let addr = Ipv4Addr::new(192, 168, 1, 1);
+        let u32_repr = u32::from_be_bytes(addr.octets());
+        
+        // Convert back
+        let [a, b, c, d] = u32_repr.to_be_bytes();
+        let reconstructed = Ipv4Addr::new(a, b, c, d);
+        assert_eq!(addr, reconstructed);
+    }
+
+    #[test]
+    fn test_ipv4_addresses() {
+        // Test various IPv4 address conversions
+        let test_cases = vec![
+            Ipv4Addr::new(127, 0, 0, 1),        // loopback
+            Ipv4Addr::new(192, 168, 0, 1),       // private
+            Ipv4Addr::new(10, 0, 0, 1),          // private
+            Ipv4Addr::new(172, 16, 0, 1),        // private
+            Ipv4Addr::new(8, 8, 8, 8),           // public DNS
+        ];
+
+        for addr in test_cases {
+            let u32_repr = u32::from_be_bytes(addr.octets());
+            let [a, b, c, d] = u32_repr.to_be_bytes();
+            let reconstructed = Ipv4Addr::new(a, b, c, d);
+            assert_eq!(addr, reconstructed, "Failed for {}", addr);
+        }
+    }
+
+    #[test]
     fn test_callback_structure() {
         // Verify the callback signature is correct (this will compile if it matches WFP requirements)
         // In real testing, this would be called by WFP kernel code
         // For now, just verify the module loads
+    }
+
+    #[test]
+    fn test_packet_metadata_construction() {
+        // Test that we can construct valid PacketMetadata
+        let metadata = PacketMetadata {
+            src_ip: Ipv4Addr::new(192, 168, 1, 100),
+            dst_ip: Ipv4Addr::new(8, 8, 8, 8),
+            byte_len: 1500,
+            packet_id: 12345,
+        };
+
+        assert_eq!(metadata.src_ip.octets()[0], 192);
+        assert_eq!(metadata.dst_ip.octets()[0], 8);
+        assert_eq!(metadata.byte_len, 1500);
+        assert_eq!(metadata.packet_id, 12345);
+    }
+
+    #[test]
+    fn test_bincode_serialization() {
+        // Test that PacketMetadata can be serialized with bincode
+        let metadata = PacketMetadata {
+            src_ip: Ipv4Addr::new(192, 168, 1, 1),
+            dst_ip: Ipv4Addr::new(192, 168, 1, 2),
+            byte_len: 576,
+            packet_id: 999,
+        };
+
+        // Serialize
+        let serialized = bincode::serialize(&metadata);
+        assert!(serialized.is_ok());
+
+        // Deserialize
+        let deserialized: Result<PacketMetadata, _> = bincode::deserialize(&serialized.unwrap());
+        assert!(deserialized.is_ok());
+
+        let recovered = deserialized.unwrap();
+        assert_eq!(recovered.src_ip, metadata.src_ip);
+        assert_eq!(recovered.dst_ip, metadata.dst_ip);
+        assert_eq!(recovered.byte_len, metadata.byte_len);
+        assert_eq!(recovered.packet_id, metadata.packet_id);
     }
 }

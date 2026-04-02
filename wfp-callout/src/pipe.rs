@@ -110,10 +110,69 @@ impl Drop for PipeClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn test_pipe_client_creation() {
         // This will fail if daemon isn't running, which is expected in tests
-        let _client = PipeClient::connect();
+        // In a CI environment without the daemon, this test should gracefully fail
+        let client = PipeClient::connect();
+        // We don't assert anything - just verify it doesn't crash
+        drop(client);
+    }
+
+    #[test]
+    fn test_packet_metadata_serialization() {
+        // Test that we can serialize PacketMetadata
+        let metadata = PacketMetadata {
+            src_ip: Ipv4Addr::new(192, 168, 1, 1),
+            dst_ip: Ipv4Addr::new(192, 168, 1, 2),
+            byte_len: 1500,
+            packet_id: 42,
+        };
+
+        let serialized = bincode::serialize(&metadata);
+        assert!(serialized.is_ok(), "Failed to serialize PacketMetadata");
+
+        let bytes = serialized.unwrap();
+        assert!(!bytes.is_empty(), "Serialized data should not be empty");
+    }
+
+    #[test]
+    fn test_packet_decision_serialization() {
+        // Test that we can serialize PacketDecision::Permit
+        let permit_decision = PacketDecision::Permit {
+            packet_id: 42,
+        };
+
+        let serialized = bincode::serialize(&permit_decision);
+        assert!(serialized.is_ok(), "Failed to serialize Permit decision");
+
+        // Test PacketDecision::Drop
+        let drop_decision = PacketDecision::Drop {
+            packet_id: 43,
+        };
+
+        let serialized = bincode::serialize(&drop_decision);
+        assert!(serialized.is_ok(), "Failed to serialize Drop decision");
+    }
+
+    #[test]
+    fn test_roundtrip_serialization() {
+        // Test serialize -> deserialize roundtrip
+        let metadata = PacketMetadata {
+            src_ip: Ipv4Addr::new(10, 0, 0, 1),
+            dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+            byte_len: 512,
+            packet_id: 999,
+        };
+
+        let serialized = bincode::serialize(&metadata).expect("serialize failed");
+        let deserialized: PacketMetadata = bincode::deserialize(&serialized).expect("deserialize failed");
+
+        assert_eq!(deserialized.src_ip, metadata.src_ip);
+        assert_eq!(deserialized.dst_ip, metadata.dst_ip);
+        assert_eq!(deserialized.byte_len, metadata.byte_len);
+        assert_eq!(deserialized.packet_id, metadata.packet_id);
     }
 }
