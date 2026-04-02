@@ -1,185 +1,154 @@
-use crate::DeviceRegistry;
-use proto::{BandwidthUpdate, DaemonCommand, DeviceState, PacketMetadata, PacketDecision};
-use std::net::Ipv4Addr;
-use std::sync::Arc;
 /// IPC Server
 /// ===========
 /// Handles communication with the WFP kernel callout and Tauri UI over named pipes
-///
-/// On Windows: Uses Windows Named Pipes (NETSHAPER_PIPE_NAME)
-/// On Unix/Dev: Uses Unix Domain Socket (/tmp/netshaper.sock)
-///
-/// Packet Flow:
-/// 1. WFP kernel callout sends PacketMetadata over named pipe
-/// 2. Daemon checks device registry for bandwidth limits
-/// 3. Token bucket scheduler decides: Permit or Drop
-/// 4. Daemon sends PacketDecision back to kernel callout
+
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::sync::Arc;
 use tokio::sync::Mutex;
+use crate::DeviceRegistry;
+use proto::{PacketMetadata, PacketDecision};
 
 #[derive(Error, Debug)]
 pub enum DaemonError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
 
-    #[error("Decode error: {0}")]
-    Decode(String),
-
-    #[error("Encode error: {0}")]
-    Encode(String),
-
-    #[error("Serialization error: {0}")]
-    Bincode(#[from] bincode::Error),
+/// Handle a single packet classification request
+/// Returns PacketDecision based on device's token bucket state
+async fn classify_packet(
+    metadata: &PacketMetadata,
+    registry: &Arc<Mutex<DeviceRegistry>>,
+) -> PacketDecision {
+    let mut reg = registry.lock().await;
+    
+    // Check if device is in registry
+    match reg.get_bucket_mut(metadata.dst_ip) {
+        Some(bucket) => {
+            // Device is throttled - try to consume tokens
+            if bucket.try_consume(metadata.byte_len) {
+                // Packet approved - can transmit immediately
+                PacketDecision::Permit {
+                    packet_id: metadata.packet_id,
+                }
+            } else {
+                // Packet denied - insufficient tokens
+                PacketDecision::Drop {
+                    packet_id: metadata.packet_id,
+                }
+            }
+        }
+        None => {
+            // Device not in registry - permit by default (not being rate-limited)
+            PacketDecision::Permit {
+                packet_id: metadata.packet_id,
+            }
+        }
+    }
 }
 
 /// Run the IPC server that listens for messages from the kernel callout and UI
-pub async fn run_pipe_server(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), DaemonError> {
-    #[cfg(windows)]
-    {
-        run_windows_pipe_server(registry).await
-    }
-
-    #[cfg(unix)]
-    {
-        run_unix_socket_server(registry).await
-    }
-}
-
-/// Windows-specific named pipe server implementation
-#[cfg(windows)]
-async fn run_windows_pipe_server(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), DaemonError> {
-    use std::ffi::OsStr;
-    use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
-
-    let pipe_name = proto::NETSHAPER_PIPE_NAME;
-    tracing::info!("Starting IPC server on named pipe: {}", pipe_name);
-
-    loop {
-        let server = ServerOptions::new()
-            .first_pipe_instance(false)
-            .access_mode(winapi::um::winnt::GENERIC_READ | winapi::um::winnt::GENERIC_WRITE)
-            .create(pipe_name)
-            .map_err(|e| DaemonError::Io(e))?;
-
-        tracing::debug!("Named pipe server instance created");
-
-        // Handle client connection
-        if let Err(e) = handle_client(server, registry.clone()).await {
-            tracing::warn!("Error handling client: {}", e);
-        }
-    }
-}
-
-/// Unix-specific domain socket server (for development on non-Windows)
-#[cfg(unix)]
-async fn run_unix_socket_server(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), DaemonError> {
-    use std::path::Path;
-    use tokio::net::UnixListener;
-
-    let socket_path = "/tmp/netshaper.sock";
-
-    // Remove old socket file if it exists
-    if Path::new(socket_path).exists() {
-        std::fs::remove_file(socket_path).map_err(|e| DaemonError::Io(e))?;
-    }
-
-    let listener = UnixListener::bind(socket_path).map_err(|e| DaemonError::Io(e))?;
-
-    tracing::info!("Starting IPC server on Unix socket: {}", socket_path);
-
-    loop {
-        match listener.accept().await {
-            Ok((socket, _)) => {
-                let registry = registry.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_unix_client(socket, registry).await {
-                        tracing::warn!("Error handling client: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::error!("Error accepting connection: {}", e);
-            }
-        }
-    }
-}
-
-/// Handle a single client connection (Windows named pipe)
-#[cfg(windows)]
-async fn handle_client(
-    mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
+/// Accepts multiple concurrent clients and handles packet classification
+/// With connection limiting and graceful shutdown support
+pub async fn run_pipe_server(
     registry: Arc<Mutex<DeviceRegistry>>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(), DaemonError> {
-    let mut buffer = vec![0u8; 65536]; // Larger buffer for potential packets
-
+    use tokio::net::windows::named_pipe::ServerOptions;
+    use tokio::sync::Semaphore;
+    use std::sync::Arc as StdArc;
+    use std::time::Duration;
+    
+    let pipe_name = proto::NETSHAPER_PIPE_NAME;
+    tracing::info!("IPC server listening on {}", pipe_name);
+    
+    // Limit concurrent connections to 32 (prevent resource exhaustion)
+    let connection_limit = StdArc::new(Semaphore::new(32));
+    
+    // Retry backoff for pipe creation
+    let mut retry_delay = Duration::from_millis(100);
+    let max_retry_delay = Duration::from_secs(5);
+    
     loop {
-        match pipe.read(&mut buffer).await {
-            Ok(0) => {
-                // Client disconnected
-                tracing::debug!("Client disconnected");
+        tokio::select! {
+            _ = shutdown.notified() => {
+                tracing::info!("IPC server received shutdown signal");
                 break;
             }
-            Ok(n) => {
-                // Try to parse as PacketMetadata first, then DaemonCommand
-                if let Ok(packet) = bincode::deserialize::<PacketMetadata>(&buffer[..n]) {
-                    // This is a packet from WFP kernel callout
-                    if let Err(e) = process_packet(packet, registry.clone(), &mut pipe).await {
-                        tracing::error!("Error processing packet: {}", e);
+            
+            result = async {
+                // Create a new server instance for each connection
+                ServerOptions::new().create(pipe_name)
+            } => {
+                match result {
+                    Ok(server) => {
+                        // Reset retry delay on successful creation
+                        retry_delay = Duration::from_millis(100);
+                        
+                        // Wait for a client to connect
+                        match server.connect().await {
+                            Ok(_) => {
+                                let registry_clone = registry.clone();
+                                let conn_limit = connection_limit.clone();
+                                let shutdown_clone = shutdown.clone();
+                                
+                                // Spawn a task to handle this client
+                                tokio::spawn(async move {
+                                    // Acquire connection slot
+                                    let _permit = match conn_limit.acquire().await {
+                                        Ok(p) => p,
+                                        Err(e) => {
+                                            tracing::warn!("Failed to acquire connection slot: {}", e);
+                                            return;
+                                        }
+                                    };
+                                    
+                                    match handle_pipe_client(server, registry_clone, shutdown_clone).await {
+                                        Ok(_) => tracing::debug!("Client disconnected"),
+                                        Err(e) => tracing::warn!("Error handling client: {}", e),
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to accept connection: {}", e);
+                            }
+                        }
                     }
-                } else if let Ok(cmd) = bincode::deserialize::<DaemonCommand>(&buffer[..n]) {
-                    // This is a command from UI or other client
-                    if let Err(e) = process_command(cmd, registry.clone(), &mut pipe).await {
-                        tracing::error!("Error processing command: {}", e);
+                    Err(e) => {
+                        tracing::error!("Failed to create named pipe: {}. Retrying in {:?}", e, retry_delay);
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay = std::cmp::min(retry_delay.saturating_mul(2), max_retry_delay);
                     }
-                } else {
-                    tracing::warn!("Failed to deserialize message (not packet or command)");
                 }
             }
-            Err(e) => {
-                tracing::error!("Error reading from pipe: {}", e);
-                break;
-            }
         }
     }
-
+    
     Ok(())
 }
 
-/// Handle a single client connection (Unix socket)
-#[cfg(unix)]
-async fn handle_unix_client(
-    mut socket: tokio::net::UnixStream,
+/// Handle a single named pipe client connection
+/// Reads PacketMetadata, classifies, and sends back PacketDecision
+/// Respects shutdown signal for graceful termination
+async fn handle_pipe_client(
+    mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     registry: Arc<Mutex<DeviceRegistry>>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(), DaemonError> {
-    let mut buffer = vec![0u8; 65536]; // Larger buffer for potential packets
-
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    
     loop {
-        match socket.read(&mut buffer).await {
-            Ok(0) => {
-                // Client disconnected
-                tracing::debug!("Client disconnected");
+        // Read message size (little-endian u32)
+        let mut size_bytes = [0u8; 4];
+        match pipe.read_exact(&mut size_bytes).await {
+            Ok(_) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // Client disconnected gracefully
                 break;
-            }
-            Ok(n) => {
-                // Try to parse as PacketMetadata first, then DaemonCommand
-                if let Ok(packet) = bincode::deserialize::<PacketMetadata>(&buffer[..n]) {
-                    // This is a packet from WFP kernel callout
-                    if let Err(e) = process_unix_packet(packet, registry.clone(), &mut socket).await {
-                        tracing::error!("Error processing packet: {}", e);
-                    }
-                } else if let Ok(cmd) = bincode::deserialize::<DaemonCommand>(&buffer[..n]) {
-                    // This is a command from UI or other client
-                    if let Err(e) = process_unix_command(cmd, registry.clone(), &mut socket).await {
-                        tracing::error!("Error processing command: {}", e);
-                    }
-                } else {
-                    tracing::warn!("Failed to deserialize message (not packet or command)");
-                }
             }
             Err(e) => {
-                tracing::error!("Error reading from socket: {}", e);
-                break;
+                tracing::warn!("Failed to read message size: {}", e);
+                return Err(DaemonError::Io(e));
             }
         }
     }
@@ -482,37 +451,14 @@ async fn process_unix_packet(
                 packet_id: metadata.packet_id,
             }
         }
-    } else {
-        // Device not enrolled - block by default for security
-        tracing::warn!("Dropping packet from unapproved device: {}", metadata.src_ip);
-        PacketDecision::Drop {
-            packet_id: metadata.packet_id,
+        
+        if let Err(e) = pipe.write_all(&response).await {
+            tracing::warn!("Failed to write response: {}", e);
+            return Err(DaemonError::Io(e));
         }
-    };
-
-    // Send decision back to kernel callout
-    let response = bincode::serialize(&decision)?;
-    socket.write_all(&response).await?;
-
+    }
+    
     Ok(())
-}
-
-/// Build DeviceState snapshots for all devices
-fn build_device_states(registry: &crate::DeviceRegistry) -> Vec<DeviceState> {
-    registry
-        .list_devices()
-        .iter()
-        .map(|&ip| {
-            let bucket = registry.get_bucket(ip).unwrap();
-            DeviceState {
-                ip,
-                hostname: None, // TODO: Resolve hostname
-                bytes_per_sec: bucket.allowed_bytes_per_sec,
-                current_usage: 0, // TODO: Track rolling average
-                is_blocked: bucket.allowed_bytes_per_sec == 0,
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -520,74 +466,32 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_build_device_states() {
-        let mut registry = crate::DeviceRegistry::new();
-        let ip: Ipv4Addr = "192.168.1.100".parse().unwrap();
-
-        registry.insert_device(ip, 1_000_000);
-        let states = build_device_states(&registry);
-
-        assert_eq!(states.len(), 1);
-        assert_eq!(states[0].ip, ip);
-        assert_eq!(states[0].bytes_per_sec, 1_000_000);
-        assert!(!states[0].is_blocked);
-    }
-
-    #[tokio::test]
-    async fn test_build_device_states_blocked() {
-        let mut registry = crate::DeviceRegistry::new();
-        let ip: Ipv4Addr = "192.168.1.100".parse().unwrap();
-
-        registry.insert_device(ip, 0); // Blocked
-        let states = build_device_states(&registry);
-
-        assert_eq!(states.len(), 1);
-        assert!(states[0].is_blocked);
-    }
-
-    #[test]
-    fn test_packet_metadata_serialization() {
-        let packet = PacketMetadata {
-            src_ip: "192.168.1.100".parse().unwrap(),
-            dst_ip: "8.8.8.8".parse().unwrap(),
-            byte_len: 1500,
-            packet_id: 12345,
+    async fn test_classify_packet() {
+        use std::net::Ipv4Addr;
+        
+        let registry = Arc::new(Mutex::new(DeviceRegistry::new()));
+        
+        // Add a device to the registry
+        {
+            let mut reg = registry.lock().await;
+            reg.insert_device(Ipv4Addr::new(192, 168, 1, 100), 1_000_000); // 1 MB/s
+        }
+        
+        // Create a small packet metadata
+        let metadata = PacketMetadata {
+            src_ip: Ipv4Addr::new(192, 168, 1, 1),
+            dst_ip: Ipv4Addr::new(192, 168, 1, 100),
+            byte_len: 512,
+            packet_id: 1,
         };
-
-        let encoded = bincode::serialize(&packet).expect("encode failed");
-        let decoded: PacketMetadata = bincode::deserialize(&encoded).expect("decode failed");
-
-        assert_eq!(packet.src_ip, decoded.src_ip);
-        assert_eq!(packet.dst_ip, decoded.dst_ip);
-        assert_eq!(packet.byte_len, decoded.byte_len);
-        assert_eq!(packet.packet_id, decoded.packet_id);
-    }
-
-    #[test]
-    fn test_packet_decision_serialization() {
-        let decision = PacketDecision::Permit { packet_id: 999 };
-        let encoded = bincode::serialize(&decision).expect("encode failed");
-        let decoded: PacketDecision = bincode::deserialize(&encoded).expect("decode failed");
-        assert_eq!(decision, decoded);
-    }
-
-    #[test]
-    fn test_mixed_message_types() {
-        // Verify that both PacketMetadata and DaemonCommand can be serialized
-        let packet = PacketMetadata {
-            src_ip: "192.168.1.100".parse().unwrap(),
-            dst_ip: "8.8.8.8".parse().unwrap(),
-            byte_len: 1500,
-            packet_id: 12345,
-        };
-
-        let cmd = DaemonCommand::ListDevices;
-
-        let packet_encoded = bincode::serialize(&packet).expect("packet encode failed");
-        let cmd_encoded = bincode::serialize(&cmd).expect("cmd encode failed");
-
-        // Try to parse each one - packet should NOT decode as command and vice versa
-        assert!(bincode::deserialize::<DaemonCommand>(&packet_encoded).is_err());
-        assert!(bincode::deserialize::<PacketMetadata>(&cmd_encoded).is_err());
+        
+        // Should be permitted (device has tokens)
+        let decision = classify_packet(&metadata, &registry).await;
+        match decision {
+            PacketDecision::Permit { packet_id } => {
+                assert_eq!(packet_id, 1);
+            }
+            _ => panic!("Expected Permit"),
+        }
     }
 }
