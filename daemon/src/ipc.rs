@@ -12,17 +12,10 @@ use proto::{PacketMetadata, PacketDecision};
 pub enum DaemonError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("Decode error: {0}")]
-    Decode(String),
-
-    #[error("Encode error: {0}")]
-    Encode(String),
 }
 
 /// Handle a single packet classification request
 /// Returns PacketDecision based on device's token bucket state
-#[allow(dead_code)]
 async fn classify_packet(
     metadata: &PacketMetadata,
     registry: &Arc<Mutex<DeviceRegistry>>,
@@ -56,47 +49,91 @@ async fn classify_packet(
 
 /// Run the IPC server that listens for messages from the kernel callout and UI
 /// Accepts multiple concurrent clients and handles packet classification
+/// With connection limiting and graceful shutdown support
 pub async fn run_pipe_server(
     registry: Arc<Mutex<DeviceRegistry>>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(), DaemonError> {
     use tokio::net::windows::named_pipe::ServerOptions;
+    use tokio::sync::Semaphore;
+    use std::sync::Arc as StdArc;
+    use std::time::Duration;
     
     let pipe_name = proto::NETSHAPER_PIPE_NAME;
     tracing::info!("IPC server listening on {}", pipe_name);
     
+    // Limit concurrent connections to 32 (prevent resource exhaustion)
+    let connection_limit = StdArc::new(Semaphore::new(32));
+    
+    // Retry backoff for pipe creation
+    let mut retry_delay = Duration::from_millis(100);
+    let max_retry_delay = Duration::from_secs(5);
+    
     loop {
-        // Create a new server instance for each connection
-        let server = ServerOptions::new()
-            .create(pipe_name)
-            .map_err(|e| {
-                tracing::error!("Failed to create named pipe server: {}", e);
-                DaemonError::Io(e)
-            })?;
-        
-        // Wait for a client to connect (blocking until connection)
-        server.connect().await.map_err(|e| {
-            tracing::error!("Failed to accept client connection: {}", e);
-            DaemonError::Io(e)
-        })?;
-        
-        let registry_clone = registry.clone();
-        
-        // Spawn a task to handle this client connection
-        // (allows multiple concurrent clients)
-        tokio::spawn(async move {
-            match handle_pipe_client(server, registry_clone).await {
-                Ok(_) => tracing::debug!("Client disconnected"),
-                Err(e) => tracing::warn!("Error handling client: {}", e),
+        tokio::select! {
+            _ = shutdown.notified() => {
+                tracing::info!("IPC server received shutdown signal");
+                break;
             }
-        });
+            
+            result = async {
+                // Create a new server instance for each connection
+                ServerOptions::new().create(pipe_name)
+            } => {
+                match result {
+                    Ok(server) => {
+                        // Reset retry delay on successful creation
+                        retry_delay = Duration::from_millis(100);
+                        
+                        // Wait for a client to connect
+                        match server.connect().await {
+                            Ok(_) => {
+                                let registry_clone = registry.clone();
+                                let conn_limit = connection_limit.clone();
+                                let shutdown_clone = shutdown.clone();
+                                
+                                // Spawn a task to handle this client
+                                tokio::spawn(async move {
+                                    // Acquire connection slot
+                                    let _permit = match conn_limit.acquire().await {
+                                        Ok(p) => p,
+                                        Err(e) => {
+                                            tracing::warn!("Failed to acquire connection slot: {}", e);
+                                            return;
+                                        }
+                                    };
+                                    
+                                    match handle_pipe_client(server, registry_clone, shutdown_clone).await {
+                                        Ok(_) => tracing::debug!("Client disconnected"),
+                                        Err(e) => tracing::warn!("Error handling client: {}", e),
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to accept connection: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create named pipe: {}. Retrying in {:?}", e, retry_delay);
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay = std::cmp::min(retry_delay.saturating_mul(2), max_retry_delay);
+                    }
+                }
+            }
+        }
     }
+    
+    Ok(())
 }
 
 /// Handle a single named pipe client connection
 /// Reads PacketMetadata, classifies, and sends back PacketDecision
+/// Respects shutdown signal for graceful termination
 async fn handle_pipe_client(
     mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     registry: Arc<Mutex<DeviceRegistry>>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(), DaemonError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     
