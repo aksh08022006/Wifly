@@ -1,17 +1,16 @@
+use crate::DeviceRegistry;
+use proto::{BandwidthUpdate, DaemonCommand, DeviceState};
+use std::net::Ipv4Addr;
+use std::sync::Arc;
 /// IPC Server
 /// ===========
 /// Handles communication with the WFP kernel callout and Tauri UI over named pipes
-/// 
+///
 /// On Windows: Uses Windows Named Pipes (NETSHAPER_PIPE_NAME)
 /// On Unix/Dev: Uses Unix Domain Socket (/tmp/netshaper.sock)
-
 use thiserror::Error;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::DeviceRegistry;
-use proto::{DaemonCommand, DeviceState, BandwidthUpdate};
-use std::net::Ipv4Addr;
+use tokio::sync::Mutex;
 
 #[derive(Error, Debug)]
 pub enum DaemonError {
@@ -29,9 +28,7 @@ pub enum DaemonError {
 }
 
 /// Run the IPC server that listens for messages from the kernel callout and UI
-pub async fn run_pipe_server(
-    registry: Arc<Mutex<DeviceRegistry>>,
-) -> Result<(), DaemonError> {
+pub async fn run_pipe_server(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), DaemonError> {
     #[cfg(windows)]
     {
         run_windows_pipe_server(registry).await
@@ -45,11 +42,9 @@ pub async fn run_pipe_server(
 
 /// Windows-specific named pipe server implementation
 #[cfg(windows)]
-async fn run_windows_pipe_server(
-    registry: Arc<Mutex<DeviceRegistry>>,
-) -> Result<(), DaemonError> {
-    use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+async fn run_windows_pipe_server(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), DaemonError> {
     use std::ffi::OsStr;
+    use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
 
     let pipe_name = proto::NETSHAPER_PIPE_NAME;
     tracing::info!("Starting IPC server on named pipe: {}", pipe_name);
@@ -72,22 +67,18 @@ async fn run_windows_pipe_server(
 
 /// Unix-specific domain socket server (for development on non-Windows)
 #[cfg(unix)]
-async fn run_unix_socket_server(
-    registry: Arc<Mutex<DeviceRegistry>>,
-) -> Result<(), DaemonError> {
-    use tokio::net::UnixListener;
+async fn run_unix_socket_server(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), DaemonError> {
     use std::path::Path;
+    use tokio::net::UnixListener;
 
     let socket_path = "/tmp/netshaper.sock";
-    
+
     // Remove old socket file if it exists
     if Path::new(socket_path).exists() {
-        std::fs::remove_file(socket_path)
-            .map_err(|e| DaemonError::Io(e))?;
+        std::fs::remove_file(socket_path).map_err(|e| DaemonError::Io(e))?;
     }
 
-    let listener = UnixListener::bind(socket_path)
-        .map_err(|e| DaemonError::Io(e))?;
+    let listener = UnixListener::bind(socket_path).map_err(|e| DaemonError::Io(e))?;
 
     tracing::info!("Starting IPC server on Unix socket: {}", socket_path);
 
@@ -165,7 +156,9 @@ async fn handle_unix_client(
                 // Process command
                 match bincode::deserialize::<DaemonCommand>(&buffer[..n]) {
                     Ok(cmd) => {
-                        if let Err(e) = process_unix_command(cmd, registry.clone(), &mut socket).await {
+                        if let Err(e) =
+                            process_unix_command(cmd, registry.clone(), &mut socket).await
+                        {
                             tracing::error!("Error processing command: {}", e);
                         }
                     }

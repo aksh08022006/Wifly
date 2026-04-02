@@ -7,4 +7,4 @@ pub mod handshake;
 
 pub use cert::CertBundle;
 pub use device_enrollment::{DeviceEnrollment, DeviceList};
-pub use handshake::run_consent_server;
+pub use handshake::{run_consent_server, EnrolledDevices};
