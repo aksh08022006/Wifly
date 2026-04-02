@@ -8,12 +8,8 @@
 )]
 
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use ui::DeviceInfo;
-
-// Default bandwidth limit for approved devices (10 MB/s)
-const DEFAULT_BANDWIDTH_LIMIT: u64 = 10_000_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RawDeviceData {
@@ -46,13 +42,13 @@ async fn fetch_devices_from_daemon() -> Result<Vec<DeviceInfo>, String> {
 
 #[cfg(windows)]
 async fn connect_to_daemon_windows() -> Result<Vec<DeviceInfo>, String> {
-    use tokio::net::windows::named_pipe::ClientOptions;
+    use std::fs::File;
+    use std::io::{Read, Write};
     
     let pipe_name = "\\\\.\\pipe\\netshaper";
     
-    let mut pipe = ClientOptions::new()
-        .open(pipe_name)
-        .await
+    // Open named pipe (blocking I/O)
+    let mut pipe = File::open(pipe_name)
         .map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
     // Send list_devices command
@@ -60,13 +56,11 @@ async fn connect_to_daemon_windows() -> Result<Vec<DeviceInfo>, String> {
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     pipe.write_all(&request)
-        .await
         .map_err(|e| format!("Failed to send command: {}", e))?;
 
     // Read response
     let mut buffer = vec![0; 16384];
     let n = pipe.read(&mut buffer)
-        .await
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     buffer.truncate(n);
@@ -161,75 +155,18 @@ async fn deny_device(ip: String) -> Result<(), String> {
     }
 }
 
-/// M5 Phase 5: Get bandwidth stats for a device
-#[tauri::command]
-async fn get_device_stats(ip: String) -> Result<(u64, u64, u64), String> {
-    // Returns (current_usage, peak_usage, total_consumption)
-    #[cfg(windows)]
-    {
-        get_device_stats_windows(ip).await
-    }
-
-    #[cfg(unix)]
-    {
-        get_device_stats_unix(ip).await
-    }
-}
-
-/// M5 Phase 5: Get bandwidth stats for all devices
-#[tauri::command]
-async fn get_all_device_stats() -> Result<Vec<(String, u64, u64, u64, u64)>, String> {
-    // Returns Vec<(ip, current_usage, peak_usage, total_consumption, bandwidth_limit)>
-    #[cfg(windows)]
-    {
-        get_all_device_stats_windows().await
-    }
-
-    #[cfg(unix)]
-    {
-        get_all_device_stats_unix().await
-    }
-}
-
 #[cfg(windows)]
 async fn send_command_to_daemon_windows(command: String) -> Result<(), String> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    use std::net::Ipv4Addr;
-    use proto::DaemonCommand;
-    use proto::BandwidthUpdate;
+    use std::fs::File;
+    use std::io::Write;
     
-    let mut pipe = ClientOptions::new()
-        .open("\\\\.\\pipe\\netshaper")
-        .await
+    let mut pipe = File::open("\\\\.\\pipe\\netshaper")
         .map_err(|e| format!("Connection failed: {}", e))?;
 
-    // Parse command: "approve:192.168.1.100" or "deny:192.168.1.100"
-    let (action, ip_str) = if let Some(pos) = command.find(':') {
-        (&command[..pos], &command[pos+1..])
-    } else {
-        return Err("Invalid command format".to_string());
-    };
-
-    let ip: Ipv4Addr = ip_str.parse()
-        .map_err(|_| format!("Invalid IP: {}", ip_str))?;
-
-    let cmd = match action {
-        "approve" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
-            ip,
-            bytes_per_sec: DEFAULT_BANDWIDTH_LIMIT,
-        }),
-        "deny" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
-            ip,
-            bytes_per_sec: 0, // 0 = blocked
-        }),
-        _ => return Err(format!("Unknown action: {}", action)),
-    };
-
-    let request = bincode::serialize(&cmd)
+    let request = bincode::serialize(&command)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     pipe.write_all(&request)
-        .await
         .map_err(|e| format!("Send error: {}", e))?;
 
     Ok(())
@@ -238,37 +175,12 @@ async fn send_command_to_daemon_windows(command: String) -> Result<(), String> {
 #[cfg(unix)]
 async fn send_command_to_daemon_unix(command: String) -> Result<(), String> {
     use tokio::net::UnixStream;
-    use std::net::Ipv4Addr;
-    use proto::DaemonCommand;
-    use proto::BandwidthUpdate;
     
     let mut stream = UnixStream::connect("/tmp/netshaper.sock")
         .await
         .map_err(|e| format!("Connection failed: {}", e))?;
 
-    // Parse command: "approve:192.168.1.100" or "deny:192.168.1.100"
-    let (action, ip_str) = if let Some(pos) = command.find(':') {
-        (&command[..pos], &command[pos+1..])
-    } else {
-        return Err("Invalid command format".to_string());
-    };
-
-    let ip: Ipv4Addr = ip_str.parse()
-        .map_err(|_| format!("Invalid IP: {}", ip_str))?;
-
-    let cmd = match action {
-        "approve" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
-            ip,
-            bytes_per_sec: DEFAULT_BANDWIDTH_LIMIT,
-        }),
-        "deny" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
-            ip,
-            bytes_per_sec: 0, // 0 = blocked
-        }),
-        _ => return Err(format!("Unknown action: {}", action)),
-    };
-
-    let request = bincode::serialize(&cmd)
+    let request = bincode::serialize(&command)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     stream.write_all(&request)
@@ -278,149 +190,9 @@ async fn send_command_to_daemon_unix(command: String) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
-async fn get_device_stats_windows(ip: String) -> Result<(u64, u64, u64), String> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    use std::net::Ipv4Addr;
-    use proto::DaemonCommand;
-    
-    let parsed_ip: Ipv4Addr = ip.parse()
-        .map_err(|_| format!("Invalid IP: {}", ip))?;
-
-    let mut pipe = ClientOptions::new()
-        .open("\\\\.\\pipe\\netshaper")
-        .await
-        .map_err(|e| format!("Connection failed: {}", e))?;
-
-    let cmd = DaemonCommand::GetDeviceStats(parsed_ip);
-    let request = bincode::serialize(&cmd)
-        .map_err(|e| format!("Serialization error: {}", e))?;
-    
-    pipe.write_all(&request)
-        .await
-        .map_err(|e| format!("Send error: {}", e))?;
-
-    let mut buffer = vec![0; 1024];
-    let n = pipe.read(&mut buffer)
-        .await
-        .map_err(|e| format!("Read error: {}", e))?;
-    
-    buffer.truncate(n);
-    
-    let stats: proto::DeviceStats = bincode::deserialize(&buffer)
-        .map_err(|e| format!("Deserialization error: {}", e))?;
-    
-    Ok((stats.current_usage, stats.peak_usage, stats.total_consumption))
-}
-
-#[cfg(unix)]
-async fn get_device_stats_unix(ip: String) -> Result<(u64, u64, u64), String> {
-    use tokio::net::UnixStream;
-    use std::net::Ipv4Addr;
-    use proto::DaemonCommand;
-    
-    let parsed_ip: Ipv4Addr = ip.parse()
-        .map_err(|_| format!("Invalid IP: {}", ip))?;
-
-    let mut stream = UnixStream::connect("/tmp/netshaper.sock")
-        .await
-        .map_err(|e| format!("Connection failed: {}", e))?;
-
-    let cmd = DaemonCommand::GetDeviceStats(parsed_ip);
-    let request = bincode::serialize(&cmd)
-        .map_err(|e| format!("Serialization error: {}", e))?;
-    
-    stream.write_all(&request)
-        .await
-        .map_err(|e| format!("Send error: {}", e))?;
-
-    let mut buffer = vec![0; 1024];
-    let n = stream.read(&mut buffer)
-        .await
-        .map_err(|e| format!("Read error: {}", e))?;
-    
-    buffer.truncate(n);
-    
-    let stats: proto::DeviceStats = bincode::deserialize(&buffer)
-        .map_err(|e| format!("Deserialization error: {}", e))?;
-    
-    Ok((stats.current_usage, stats.peak_usage, stats.total_consumption))
-}
-
-#[cfg(windows)]
-async fn get_all_device_stats_windows() -> Result<Vec<(String, u64, u64, u64, u64)>, String> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    use proto::DaemonCommand;
-    
-    let mut pipe = ClientOptions::new()
-        .open("\\\\.\\pipe\\netshaper")
-        .await
-        .map_err(|e| format!("Connection failed: {}", e))?;
-
-    let cmd = DaemonCommand::GetAllDeviceStats;
-    let request = bincode::serialize(&cmd)
-        .map_err(|e| format!("Serialization error: {}", e))?;
-    
-    pipe.write_all(&request)
-        .await
-        .map_err(|e| format!("Send error: {}", e))?;
-
-    let mut buffer = vec![0; 65536];
-    let n = pipe.read(&mut buffer)
-        .await
-        .map_err(|e| format!("Read error: {}", e))?;
-    
-    buffer.truncate(n);
-    
-    let all_stats: Vec<proto::DeviceStats> = bincode::deserialize(&buffer)
-        .map_err(|e| format!("Deserialization error: {}", e))?;
-    
-    Ok(all_stats.into_iter().map(|s| {
-        (s.ip.to_string(), s.current_usage, s.peak_usage, s.total_consumption, s.bandwidth_limit)
-    }).collect())
-}
-
-#[cfg(unix)]
-async fn get_all_device_stats_unix() -> Result<Vec<(String, u64, u64, u64, u64)>, String> {
-    use tokio::net::UnixStream;
-    use proto::DaemonCommand;
-    
-    let mut stream = UnixStream::connect("/tmp/netshaper.sock")
-        .await
-        .map_err(|e| format!("Connection failed: {}", e))?;
-
-    let cmd = DaemonCommand::GetAllDeviceStats;
-    let request = bincode::serialize(&cmd)
-        .map_err(|e| format!("Serialization error: {}", e))?;
-    
-    stream.write_all(&request)
-        .await
-        .map_err(|e| format!("Send error: {}", e))?;
-
-    let mut buffer = vec![0; 65536];
-    let n = stream.read(&mut buffer)
-        .await
-        .map_err(|e| format!("Read error: {}", e))?;
-    
-    buffer.truncate(n);
-    
-    let all_stats: Vec<proto::DeviceStats> = bincode::deserialize(&buffer)
-        .map_err(|e| format!("Deserialization error: {}", e))?;
-    
-    Ok(all_stats.into_iter().map(|s| {
-        (s.ip.to_string(), s.current_usage, s.peak_usage, s.total_consumption, s.bandwidth_limit)
-    }).collect())
-}
-
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            list_devices,
-            approve_device,
-            deny_device,
-            get_device_stats,
-            get_all_device_stats,
-        ])
+        .invoke_handler(tauri::generate_handler![list_devices, approve_device, deny_device])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
