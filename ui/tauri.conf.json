@@ -1,0 +1,29 @@
+{
+  "productName": "NetShaper",
+  "version": "0.1.0",
+  "identifier": "com.netshaper.dev",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../src-tauri/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "NetShaper - Device Management",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "focus": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
