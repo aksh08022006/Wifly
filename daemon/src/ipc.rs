@@ -197,12 +197,26 @@ async fn process_command(
     match cmd {
         DaemonCommand::UpdateBandwidth(update) => {
             let mut reg = registry.lock().await;
-            reg.update_bandwidth(update.ip, update.bytes_per_sec);
-            tracing::info!(
-                "Updated bandwidth for {}: {} bytes/sec",
-                update.ip,
-                update.bytes_per_sec
-            );
+            
+            // If device doesn't exist and bandwidth > 0, create new bucket
+            if !reg.list_devices().contains(&update.ip) && update.bytes_per_sec > 0 {
+                reg.insert_device(update.ip, update.bytes_per_sec);
+                tracing::info!(
+                    "Enrolled new device {} with {} bytes/sec limit",
+                    update.ip,
+                    update.bytes_per_sec
+                );
+            } else {
+                // Update existing device's bandwidth
+                reg.update_bandwidth(update.ip, update.bytes_per_sec);
+                let status = if update.bytes_per_sec == 0 { "blocked" } else { "approved" };
+                tracing::info!(
+                    "Device {} {}: {} bytes/sec",
+                    update.ip,
+                    status,
+                    update.bytes_per_sec
+                );
+            }
             Ok(())
         }
         DaemonCommand::ListDevices => {
@@ -246,25 +260,34 @@ async fn process_packet(
     registry: Arc<Mutex<DeviceRegistry>>,
     pipe: &mut tokio::net::windows::named_pipe::NamedPipeServer,
 ) -> Result<(), DaemonError> {
-    let reg = registry.lock().await;
+    let mut reg = registry.lock().await;
 
-    // Check if source device is enrolled and not blocked
-    let decision = if let Some(bucket) = reg.get_bucket(metadata.src_ip) {
+    // Check if source device is enrolled and get decision from token bucket
+    let decision = if let Some(bucket) = reg.get_bucket_mut(metadata.src_ip) {
         if bucket.allowed_bytes_per_sec == 0 {
-            // Device is completely blocked
+            // Device is completely blocked (denied)
             tracing::debug!("Dropping packet from blocked device: {}", metadata.src_ip);
             PacketDecision::Drop {
                 packet_id: metadata.packet_id,
             }
-        } else {
-            // Device has bandwidth - let scheduler decide
-            // (In Phase 4, this will check token bucket)
+        } else if bucket.try_consume(metadata.byte_len) {
+            // Token bucket allowed the packet
             tracing::debug!(
-                "Permitting packet from {}: {} bytes",
+                "Permitting packet from {}: {} bytes (tokens available)",
                 metadata.src_ip,
                 metadata.byte_len
             );
             PacketDecision::Permit {
+                packet_id: metadata.packet_id,
+            }
+        } else {
+            // Token bucket rejected (rate limited)
+            tracing::debug!(
+                "Dropping packet from {}: {} bytes (rate limited)",
+                metadata.src_ip,
+                metadata.byte_len
+            );
+            PacketDecision::Drop {
                 packet_id: metadata.packet_id,
             }
         }
@@ -293,12 +316,26 @@ async fn process_unix_command(
     match cmd {
         DaemonCommand::UpdateBandwidth(update) => {
             let mut reg = registry.lock().await;
-            reg.update_bandwidth(update.ip, update.bytes_per_sec);
-            tracing::info!(
-                "Updated bandwidth for {}: {} bytes/sec",
-                update.ip,
-                update.bytes_per_sec
-            );
+            
+            // If device doesn't exist and bandwidth > 0, create new bucket
+            if !reg.list_devices().contains(&update.ip) && update.bytes_per_sec > 0 {
+                reg.insert_device(update.ip, update.bytes_per_sec);
+                tracing::info!(
+                    "Enrolled new device {} with {} bytes/sec limit",
+                    update.ip,
+                    update.bytes_per_sec
+                );
+            } else {
+                // Update existing device's bandwidth
+                reg.update_bandwidth(update.ip, update.bytes_per_sec);
+                let status = if update.bytes_per_sec == 0 { "blocked" } else { "approved" };
+                tracing::info!(
+                    "Device {} {}: {} bytes/sec",
+                    update.ip,
+                    status,
+                    update.bytes_per_sec
+                );
+            }
             Ok(())
         }
         DaemonCommand::ListDevices => {
@@ -322,24 +359,34 @@ async fn process_unix_packet(
     registry: Arc<Mutex<DeviceRegistry>>,
     socket: &mut tokio::net::UnixStream,
 ) -> Result<(), DaemonError> {
-    let reg = registry.lock().await;
+    let mut reg = registry.lock().await;
 
-    // Check if source device is enrolled and not blocked
-    let decision = if let Some(bucket) = reg.get_bucket(metadata.src_ip) {
+    // Check if source device is enrolled and get decision from token bucket
+    let decision = if let Some(bucket) = reg.get_bucket_mut(metadata.src_ip) {
         if bucket.allowed_bytes_per_sec == 0 {
-            // Device is completely blocked
+            // Device is completely blocked (denied)
             tracing::debug!("Dropping packet from blocked device: {}", metadata.src_ip);
             PacketDecision::Drop {
                 packet_id: metadata.packet_id,
             }
-        } else {
-            // Device has bandwidth - let scheduler decide
+        } else if bucket.try_consume(metadata.byte_len) {
+            // Token bucket allowed the packet
             tracing::debug!(
-                "Permitting packet from {}: {} bytes",
+                "Permitting packet from {}: {} bytes (tokens available)",
                 metadata.src_ip,
                 metadata.byte_len
             );
             PacketDecision::Permit {
+                packet_id: metadata.packet_id,
+            }
+        } else {
+            // Token bucket rejected (rate limited)
+            tracing::debug!(
+                "Dropping packet from {}: {} bytes (rate limited)",
+                metadata.src_ip,
+                metadata.byte_len
+            );
+            PacketDecision::Drop {
                 packet_id: metadata.packet_id,
             }
         }

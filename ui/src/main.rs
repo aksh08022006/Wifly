@@ -8,8 +8,12 @@
 )]
 
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use ui::DeviceInfo;
+
+// Default bandwidth limit for approved devices (10 MB/s)
+const DEFAULT_BANDWIDTH_LIMIT: u64 = 10_000_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RawDeviceData {
@@ -160,13 +164,38 @@ async fn deny_device(ip: String) -> Result<(), String> {
 #[cfg(windows)]
 async fn send_command_to_daemon_windows(command: String) -> Result<(), String> {
     use tokio::net::windows::named_pipe::ClientOptions;
+    use std::net::Ipv4Addr;
+    use proto::DaemonCommand;
+    use proto::BandwidthUpdate;
     
     let mut pipe = ClientOptions::new()
         .open("\\\\.\\pipe\\netshaper")
         .await
         .map_err(|e| format!("Connection failed: {}", e))?;
 
-    let request = bincode::serialize(&command)
+    // Parse command: "approve:192.168.1.100" or "deny:192.168.1.100"
+    let (action, ip_str) = if let Some(pos) = command.find(':') {
+        (&command[..pos], &command[pos+1..])
+    } else {
+        return Err("Invalid command format".to_string());
+    };
+
+    let ip: Ipv4Addr = ip_str.parse()
+        .map_err(|_| format!("Invalid IP: {}", ip_str))?;
+
+    let cmd = match action {
+        "approve" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: DEFAULT_BANDWIDTH_LIMIT,
+        }),
+        "deny" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: 0, // 0 = blocked
+        }),
+        _ => return Err(format!("Unknown action: {}", action)),
+    };
+
+    let request = bincode::serialize(&cmd)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     pipe.write_all(&request)
@@ -179,12 +208,37 @@ async fn send_command_to_daemon_windows(command: String) -> Result<(), String> {
 #[cfg(unix)]
 async fn send_command_to_daemon_unix(command: String) -> Result<(), String> {
     use tokio::net::UnixStream;
+    use std::net::Ipv4Addr;
+    use proto::DaemonCommand;
+    use proto::BandwidthUpdate;
     
     let mut stream = UnixStream::connect("/tmp/netshaper.sock")
         .await
         .map_err(|e| format!("Connection failed: {}", e))?;
 
-    let request = bincode::serialize(&command)
+    // Parse command: "approve:192.168.1.100" or "deny:192.168.1.100"
+    let (action, ip_str) = if let Some(pos) = command.find(':') {
+        (&command[..pos], &command[pos+1..])
+    } else {
+        return Err("Invalid command format".to_string());
+    };
+
+    let ip: Ipv4Addr = ip_str.parse()
+        .map_err(|_| format!("Invalid IP: {}", ip_str))?;
+
+    let cmd = match action {
+        "approve" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: DEFAULT_BANDWIDTH_LIMIT,
+        }),
+        "deny" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: 0, // 0 = blocked
+        }),
+        _ => return Err(format!("Unknown action: {}", action)),
+    };
+
+    let request = bincode::serialize(&cmd)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     stream.write_all(&request)
