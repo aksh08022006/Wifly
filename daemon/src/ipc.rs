@@ -207,7 +207,27 @@ async fn process_command(
         }
         DaemonCommand::ListDevices => {
             let reg = registry.lock().await;
-            let devices = build_device_states(&reg);
+            let states = build_device_states(&reg);
+            
+            // Convert DeviceState to DeviceInfo format for UI
+            let devices: Vec<(String, Option<String>, bool, String, u64, u64)> = states
+                .iter()
+                .map(|state| {
+                    let ip_str = state.ip.to_string();
+                    let approved = !state.is_blocked;
+                    let now = chrono::Utc::now().to_rfc3339();
+                    
+                    (
+                        ip_str,
+                        state.hostname.clone(),
+                        approved,
+                        now,
+                        state.bytes_per_sec,
+                        state.current_usage,
+                    )
+                })
+                .collect();
+            
             let response = bincode::serialize(&devices)?;
             pipe.write_all(&response).await?;
             Ok(())

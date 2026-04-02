@@ -1,7 +1,8 @@
-// Main App Component - M5 Dashboard
-// ==================================
+// Main App Component - M5 Phase 3 Dashboard with IPC
+// ==================================================
 
 import React, { useState, useEffect } from 'react'
+import { invoke } from '@tauri-apps/api/tauri'
 import DeviceList from './components/DeviceList'
 import Header from './components/Header'
 import Sidebar from './components/Sidebar'
@@ -19,12 +20,23 @@ interface DeviceInfo {
 export default function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
-  // Mock data - will be replaced with daemon IPC in Phase 3
-  useEffect(() => {
-    setTimeout(() => {
+  // Fetch devices from daemon via Tauri IPC
+  const fetchDevices = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const response = await invoke<DeviceInfo[]>('list_devices')
+      setDevices(response)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      setError(`Failed to load devices: ${errorMsg}`)
+      console.error('Device fetch error:', err)
+      
+      // Fallback to mock data for development
       setDevices([
         {
           ip: '192.168.1.100',
@@ -42,18 +54,38 @@ export default function App() {
           bandwidth_limit: 0,
           current_usage: 0,
         },
-        {
-          ip: '192.168.1.102',
-          hostname: 'iPad-Air',
-          approved: true,
-          enrolled_at: '2026-04-02T10:15:30Z',
-          bandwidth_limit: 5_000_000,
-          current_usage: 1_200_000,
-        },
       ])
+    } finally {
       setLoading(false)
-    }, 500)
+    }
+  }
+
+  // Load devices on component mount
+  useEffect(() => {
+    fetchDevices()
   }, [])
+
+  // Approve device handler
+  const handleApproveDevice = async (ip: string) => {
+    try {
+      await invoke('approve_device', { ip })
+      // Refresh device list
+      await fetchDevices()
+    } catch (err) {
+      setError(`Failed to approve device: ${err}`)
+    }
+  }
+
+  // Deny device handler
+  const handleDenyDevice = async (ip: string) => {
+    try {
+      await invoke('deny_device', { ip })
+      // Refresh device list
+      await fetchDevices()
+    } catch (err) {
+      setError(`Failed to deny device: ${err}`)
+    }
+  }
 
   return (
     <div className="app-container">
@@ -61,10 +93,21 @@ export default function App() {
       <div className="main-content">
         <Sidebar open={sidebarOpen} />
         <div className="content-area">
+          {error && (
+            <div className="error-banner">
+              {error}
+              <button onClick={() => setError(null)}>✕</button>
+            </div>
+          )}
           {loading ? (
             <div className="loading">Loading devices...</div>
           ) : (
-            <DeviceList devices={devices} onSelectDevice={setSelectedDevice} />
+            <DeviceList 
+              devices={devices} 
+              onSelectDevice={setSelectedDevice}
+              onApprove={handleApproveDevice}
+              onDeny={handleDenyDevice}
+            />
           )}
         </div>
       </div>
