@@ -2,14 +2,16 @@
 
 A kernel-level bandwidth control system for Windows written entirely in Rust. Gives administrators fine-grained control over network traffic consumed by devices on the same Wi-Fi network.
 
-**Status:** Early Development — Milestone 0 Setup Phase
+**Status:** Early Development — Milestone 0 Setup Phase  
+**Repository:** https://github.com/aksh08022006/Wifly
 
 ## Quick Links
 
+- **GitHub:** https://github.com/aksh08022006/Wifly
 - **For Aksh (macOS backend development):** See [SETUP_MAC.md](./docs/SETUP_MAC.md)
 - **For Saksham (Windows driver & UI):** See [SETUP_WINDOWS.md](./docs/SETUP_WINDOWS.md)
 - **Architecture Overview:** See [ARCHITECTURE.md](./docs/ARCHITECTURE.md)
-- **Testing Guide:** See [TESTING.md](./docs/TESTING.md)
+- **Getting Started:** See [QUICKSTART.md](./QUICKSTART.md)
 
 ## Project Structure
 

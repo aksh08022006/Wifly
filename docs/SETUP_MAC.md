@@ -96,7 +96,7 @@ cargo build -p ui
 ## Step 8: Clone the Repository
 
 ```bash
-git clone <repo_url> netshaper
+git clone https://github.com/aksh08022006/Wifly.git netshaper
 cd netshaper
 ```
 

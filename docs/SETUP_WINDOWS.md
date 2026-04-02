@@ -103,8 +103,14 @@ winget install LLVM.LLVM
 ## Step 6: Clone the Repository
 
 ```powershell
-git clone <repo_url> netshaper
+git clone https://github.com/aksh08022006/Wifly.git netshaper
 cd netshaper
+```
+
+Or if already shared locally:
+```powershell
+xcopy /E /I /Y path\to\existing\netshaper C:\dev\netshaper
+cd C:\dev\netshaper
 ```
 
 ## Step 7: Test Build
