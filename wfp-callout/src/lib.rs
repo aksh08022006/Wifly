@@ -7,10 +7,14 @@
 mod engine;
 mod pipe;
 mod callout;
+mod packet_tracker;
+mod packet_injector;
 
 pub use engine::WfpEngine;
 pub use pipe::PipeClient;
 pub use callout::classify_callback;
+pub use packet_tracker::PacketTracker;
+pub use packet_injector::PacketInjector;
 
 // Re-export proto types for use by this crate
 extern crate proto;
