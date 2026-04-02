@@ -1,0 +1,1 @@
+/Users/akshkaushik/Desktop/Waifu/netshaper/target/debug/libui.rlib: /Users/akshkaushik/Desktop/Waifu/netshaper/proto/src/lib.rs /Users/akshkaushik/Desktop/Waifu/netshaper/ui/build.rs /Users/akshkaushik/Desktop/Waifu/netshaper/ui/capabilities /Users/akshkaushik/Desktop/Waifu/netshaper/ui/src/lib.rs /Users/akshkaushik/Desktop/Waifu/netshaper/ui/tauri.conf.json

@@ -151,54 +151,305 @@ async fn handle_pipe_client(
                 return Err(DaemonError::Io(e));
             }
         }
-        
-        let size = u32::from_le_bytes(size_bytes) as usize;
-        
-        // Sanity check: max 64KB message
-        if size > 65536 {
-            tracing::warn!("Message size too large: {} bytes", size);
-            break;
+    }
+
+    Ok(())
+}
+
+/// Process a daemon command (Windows)
+#[cfg(windows)]
+async fn process_command(
+    cmd: DaemonCommand,
+    registry: Arc<Mutex<DeviceRegistry>>,
+    pipe: &mut tokio::net::windows::named_pipe::NamedPipeServer,
+) -> Result<(), DaemonError> {
+    match cmd {
+        DaemonCommand::UpdateBandwidth(update) => {
+            let mut reg = registry.lock().await;
+            
+            // If device doesn't exist and bandwidth > 0, create new bucket
+            if !reg.list_devices().contains(&update.ip) && update.bytes_per_sec > 0 {
+                reg.insert_device(update.ip, update.bytes_per_sec);
+                tracing::info!(
+                    "Enrolled new device {} with {} bytes/sec limit",
+                    update.ip,
+                    update.bytes_per_sec
+                );
+            } else {
+                // Update existing device's bandwidth
+                reg.update_bandwidth(update.ip, update.bytes_per_sec);
+                let status = if update.bytes_per_sec == 0 { "blocked" } else { "approved" };
+                tracing::info!(
+                    "Device {} {}: {} bytes/sec",
+                    update.ip,
+                    status,
+                    update.bytes_per_sec
+                );
+            }
+            Ok(())
         }
-        
-        let mut buffer = vec![0u8; size];
-        
-        match pipe.read_exact(&mut buffer).await {
-            Ok(_) => {},
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                break;
+        DaemonCommand::ListDevices => {
+            let reg = registry.lock().await;
+            let states = build_device_states(&reg);
+            
+            // Convert DeviceState to DeviceInfo format for UI
+            let devices: Vec<(String, Option<String>, bool, String, u64, u64)> = states
+                .iter()
+                .map(|state| {
+                    let ip_str = state.ip.to_string();
+                    let approved = !state.is_blocked;
+                    let now = chrono::Utc::now().to_rfc3339();
+                    
+                    (
+                        ip_str,
+                        state.hostname.clone(),
+                        approved,
+                        now,
+                        state.bytes_per_sec,
+                        state.current_usage,
+                    )
+                })
+                .collect();
+            
+            let response = bincode::serialize(&devices)?;
+            pipe.write_all(&response).await?;
+            Ok(())
+        }
+        DaemonCommand::GetDeviceStats(ip) => {
+            // M5 Phase 5: Return bandwidth stats for a single device
+            let reg = registry.lock().await;
+            let current_usage = reg.get_current_usage(ip);
+            let peak_usage = reg.get_peak_usage(ip);
+            let total_consumption = reg.get_total_consumption(ip);
+            
+            if let Some(bucket) = reg.get_bucket(&ip) {
+                let stats = proto::DeviceStats {
+                    ip,
+                    current_usage,
+                    peak_usage,
+                    total_consumption,
+                    bandwidth_limit: bucket.allowed_bytes_per_sec,
+                };
+                let response = bincode::serialize(&stats)?;
+                pipe.write_all(&response).await?;
             }
-            Err(e) => {
-                tracing::warn!("Failed to read message body: {}", e);
-                return Err(DaemonError::Io(e));
+            Ok(())
+        }
+        DaemonCommand::GetAllDeviceStats => {
+            // M5 Phase 5: Return bandwidth stats for all devices
+            let reg = registry.lock().await;
+            let devices = reg.list_devices();
+            
+            let mut all_stats: Vec<proto::DeviceStats> = Vec::new();
+            for ip in devices {
+                let current_usage = reg.get_current_usage(ip);
+                let peak_usage = reg.get_peak_usage(ip);
+                let total_consumption = reg.get_total_consumption(ip);
+                
+                if let Some(bucket) = reg.get_bucket(&ip) {
+                    all_stats.push(proto::DeviceStats {
+                        ip,
+                        current_usage,
+                        peak_usage,
+                        total_consumption,
+                        bandwidth_limit: bucket.allowed_bytes_per_sec,
+                    });
+                }
+            }
+            
+            let response = bincode::serialize(&all_stats)?;
+            pipe.write_all(&response).await?;
+            Ok(())
+        }
+        DaemonCommand::Shutdown => {
+            tracing::info!("Shutdown command received");
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Process a packet from WFP kernel callout (Windows)
+#[cfg(windows)]
+async fn process_packet(
+    metadata: PacketMetadata,
+    registry: Arc<Mutex<DeviceRegistry>>,
+    pipe: &mut tokio::net::windows::named_pipe::NamedPipeServer,
+) -> Result<(), DaemonError> {
+    let mut reg = registry.lock().await;
+
+    // Check if source device is enrolled and get decision from token bucket
+    let decision = if let Some(bucket) = reg.get_bucket_mut(metadata.src_ip) {
+        if bucket.allowed_bytes_per_sec == 0 {
+            // Device is completely blocked (denied)
+            tracing::debug!("Dropping packet from blocked device: {}", metadata.src_ip);
+            PacketDecision::Drop {
+                packet_id: metadata.packet_id,
+            }
+        } else if bucket.try_consume(metadata.byte_len) {
+            // Token bucket allowed the packet
+            tracing::debug!(
+                "Permitting packet from {}: {} bytes (tokens available)",
+                metadata.src_ip,
+                metadata.byte_len
+            );
+            PacketDecision::Permit {
+                packet_id: metadata.packet_id,
+            }
+        } else {
+            // Token bucket rejected (rate limited)
+            tracing::debug!(
+                "Dropping packet from {}: {} bytes (rate limited)",
+                metadata.src_ip,
+                metadata.byte_len
+            );
+            PacketDecision::Drop {
+                packet_id: metadata.packet_id,
             }
         }
-        
-        // Deserialize PacketMetadata
-        let metadata: PacketMetadata = match bincode::deserialize(&buffer) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("Failed to deserialize PacketMetadata: {}", e);
-                continue;
+    } else {
+        // Device not enrolled - block by default for security
+        tracing::warn!("Dropping packet from unapproved device: {}", metadata.src_ip);
+        PacketDecision::Drop {
+            packet_id: metadata.packet_id,
+        }
+    };
+
+    // Send decision back to kernel callout
+    let response = bincode::serialize(&decision)?;
+    pipe.write_all(&response).await?;
+
+    Ok(())
+}
+
+/// Process a daemon command (Unix)
+#[cfg(unix)]
+async fn process_unix_command(
+    cmd: DaemonCommand,
+    registry: Arc<Mutex<DeviceRegistry>>,
+    socket: &mut tokio::net::UnixStream,
+) -> Result<(), DaemonError> {
+    match cmd {
+        DaemonCommand::UpdateBandwidth(update) => {
+            let mut reg = registry.lock().await;
+            
+            // If device doesn't exist and bandwidth > 0, create new bucket
+            if !reg.list_devices().contains(&update.ip) && update.bytes_per_sec > 0 {
+                reg.insert_device(update.ip, update.bytes_per_sec);
+                tracing::info!(
+                    "Enrolled new device {} with {} bytes/sec limit",
+                    update.ip,
+                    update.bytes_per_sec
+                );
+            } else {
+                // Update existing device's bandwidth
+                reg.update_bandwidth(update.ip, update.bytes_per_sec);
+                let status = if update.bytes_per_sec == 0 { "blocked" } else { "approved" };
+                tracing::info!(
+                    "Device {} {}: {} bytes/sec",
+                    update.ip,
+                    status,
+                    update.bytes_per_sec
+                );
             }
-        };
-        
-        // Classify the packet
-        let decision = classify_packet(&metadata, &registry).await;
-        
-        // Serialize PacketDecision
-        let response = match bincode::serialize(&decision) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Failed to serialize PacketDecision: {}", e);
-                continue;
+            Ok(())
+        }
+        DaemonCommand::ListDevices => {
+            let reg = registry.lock().await;
+            let devices = build_device_states(&reg);
+            let response = bincode::serialize(&devices)?;
+            socket.write_all(&response).await?;
+            Ok(())
+        }
+        DaemonCommand::GetDeviceStats(ip) => {
+            // M5 Phase 5: Return bandwidth stats for a single device
+            let reg = registry.lock().await;
+            let current_usage = reg.get_current_usage(ip);
+            let peak_usage = reg.get_peak_usage(ip);
+            let total_consumption = reg.get_total_consumption(ip);
+            
+            if let Some(bucket) = reg.get_bucket(ip) {
+                let stats = proto::DeviceStats {
+                    ip,
+                    current_usage,
+                    peak_usage,
+                    total_consumption,
+                    bandwidth_limit: bucket.allowed_bytes_per_sec,
+                };
+                let response = bincode::serialize(&stats)?;
+                socket.write_all(&response).await?;
             }
-        };
-        
-        // Send response size + data
-        let size_bytes = (response.len() as u32).to_le_bytes();
-        if let Err(e) = pipe.write_all(&size_bytes).await {
-            tracing::warn!("Failed to write response size: {}", e);
-            return Err(DaemonError::Io(e));
+            Ok(())
+        }
+        DaemonCommand::GetAllDeviceStats => {
+            // M5 Phase 5: Return bandwidth stats for all devices
+            let reg = registry.lock().await;
+            let devices = reg.list_devices();
+            
+            let mut all_stats: Vec<proto::DeviceStats> = Vec::new();
+            for ip in devices {
+                let current_usage = reg.get_current_usage(ip);
+                let peak_usage = reg.get_peak_usage(ip);
+                let total_consumption = reg.get_total_consumption(ip);
+                
+                if let Some(bucket) = reg.get_bucket(ip) {
+                    all_stats.push(proto::DeviceStats {
+                        ip,
+                        current_usage,
+                        peak_usage,
+                        total_consumption,
+                        bandwidth_limit: bucket.allowed_bytes_per_sec,
+                    });
+                }
+            }
+            
+            let response = bincode::serialize(&all_stats)?;
+            socket.write_all(&response).await?;
+            Ok(())
+        }
+        DaemonCommand::Shutdown => {
+            tracing::info!("Shutdown command received");
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Process a packet from WFP kernel callout (Unix - for dev/testing)
+#[cfg(unix)]
+async fn process_unix_packet(
+    metadata: PacketMetadata,
+    registry: Arc<Mutex<DeviceRegistry>>,
+    socket: &mut tokio::net::UnixStream,
+) -> Result<(), DaemonError> {
+    let mut reg = registry.lock().await;
+
+    // Check if source device is enrolled and get decision from token bucket
+    let decision = if let Some(bucket) = reg.get_bucket_mut(metadata.src_ip) {
+        if bucket.allowed_bytes_per_sec == 0 {
+            // Device is completely blocked (denied)
+            tracing::debug!("Dropping packet from blocked device: {}", metadata.src_ip);
+            PacketDecision::Drop {
+                packet_id: metadata.packet_id,
+            }
+        } else if bucket.try_consume(metadata.byte_len) {
+            // Token bucket allowed the packet
+            tracing::debug!(
+                "Permitting packet from {}: {} bytes (tokens available)",
+                metadata.src_ip,
+                metadata.byte_len
+            );
+            PacketDecision::Permit {
+                packet_id: metadata.packet_id,
+            }
+        } else {
+            // Token bucket rejected (rate limited)
+            tracing::debug!(
+                "Dropping packet from {}: {} bytes (rate limited)",
+                metadata.src_ip,
+                metadata.byte_len
+            );
+            PacketDecision::Drop {
+                packet_id: metadata.packet_id,
+            }
         }
         
         if let Err(e) = pipe.write_all(&response).await {
