@@ -246,6 +246,52 @@ async fn process_command(
             pipe.write_all(&response).await?;
             Ok(())
         }
+        DaemonCommand::GetDeviceStats(ip) => {
+            // M5 Phase 5: Return bandwidth stats for a single device
+            let reg = registry.lock().await;
+            let current_usage = reg.get_current_usage(ip);
+            let peak_usage = reg.get_peak_usage(ip);
+            let total_consumption = reg.get_total_consumption(ip);
+            
+            if let Some(bucket) = reg.get_bucket(&ip) {
+                let stats = proto::DeviceStats {
+                    ip,
+                    current_usage,
+                    peak_usage,
+                    total_consumption,
+                    bandwidth_limit: bucket.allowed_bytes_per_sec,
+                };
+                let response = bincode::serialize(&stats)?;
+                pipe.write_all(&response).await?;
+            }
+            Ok(())
+        }
+        DaemonCommand::GetAllDeviceStats => {
+            // M5 Phase 5: Return bandwidth stats for all devices
+            let reg = registry.lock().await;
+            let devices = reg.list_devices();
+            
+            let mut all_stats: Vec<proto::DeviceStats> = Vec::new();
+            for ip in devices {
+                let current_usage = reg.get_current_usage(ip);
+                let peak_usage = reg.get_peak_usage(ip);
+                let total_consumption = reg.get_total_consumption(ip);
+                
+                if let Some(bucket) = reg.get_bucket(&ip) {
+                    all_stats.push(proto::DeviceStats {
+                        ip,
+                        current_usage,
+                        peak_usage,
+                        total_consumption,
+                        bandwidth_limit: bucket.allowed_bytes_per_sec,
+                    });
+                }
+            }
+            
+            let response = bincode::serialize(&all_stats)?;
+            pipe.write_all(&response).await?;
+            Ok(())
+        }
         DaemonCommand::Shutdown => {
             tracing::info!("Shutdown command received");
             std::process::exit(0);
@@ -342,6 +388,52 @@ async fn process_unix_command(
             let reg = registry.lock().await;
             let devices = build_device_states(&reg);
             let response = bincode::serialize(&devices)?;
+            socket.write_all(&response).await?;
+            Ok(())
+        }
+        DaemonCommand::GetDeviceStats(ip) => {
+            // M5 Phase 5: Return bandwidth stats for a single device
+            let reg = registry.lock().await;
+            let current_usage = reg.get_current_usage(ip);
+            let peak_usage = reg.get_peak_usage(ip);
+            let total_consumption = reg.get_total_consumption(ip);
+            
+            if let Some(bucket) = reg.get_bucket(ip) {
+                let stats = proto::DeviceStats {
+                    ip,
+                    current_usage,
+                    peak_usage,
+                    total_consumption,
+                    bandwidth_limit: bucket.allowed_bytes_per_sec,
+                };
+                let response = bincode::serialize(&stats)?;
+                socket.write_all(&response).await?;
+            }
+            Ok(())
+        }
+        DaemonCommand::GetAllDeviceStats => {
+            // M5 Phase 5: Return bandwidth stats for all devices
+            let reg = registry.lock().await;
+            let devices = reg.list_devices();
+            
+            let mut all_stats: Vec<proto::DeviceStats> = Vec::new();
+            for ip in devices {
+                let current_usage = reg.get_current_usage(ip);
+                let peak_usage = reg.get_peak_usage(ip);
+                let total_consumption = reg.get_total_consumption(ip);
+                
+                if let Some(bucket) = reg.get_bucket(ip) {
+                    all_stats.push(proto::DeviceStats {
+                        ip,
+                        current_usage,
+                        peak_usage,
+                        total_consumption,
+                        bandwidth_limit: bucket.allowed_bytes_per_sec,
+                    });
+                }
+            }
+            
+            let response = bincode::serialize(&all_stats)?;
             socket.write_all(&response).await?;
             Ok(())
         }

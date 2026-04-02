@@ -21,6 +21,11 @@ pub struct DeviceBucket {
     pub current_tokens: f64,             // fractional bytes available right now
     pub last_refill: Instant,            // when we last added tokens
     pub queue: SegQueue<DeferredPacket>, // packets waiting for tokens
+    // Usage tracking for M5 Phase 5
+    pub total_bytes_consumed: u64,       // all-time bytes that passed through
+    pub current_window_bytes: u64,       // bytes consumed in current 1-second window
+    pub window_start: Instant,           // when the current 1-second window started
+    pub peak_usage: u64,                 // highest byte rate ever observed
 }
 
 impl DeviceBucket {
@@ -33,6 +38,11 @@ impl DeviceBucket {
             current_tokens: max_burst as f64, // start full
             last_refill: Instant::now(),
             queue: SegQueue::new(),
+            // Initialize usage tracking
+            total_bytes_consumed: 0,
+            current_window_bytes: 0,
+            window_start: Instant::now(),
+            peak_usage: 0,
         }
     }
 
@@ -52,10 +62,48 @@ impl DeviceBucket {
         let bytes_f64 = bytes as f64;
         if self.current_tokens >= bytes_f64 {
             self.current_tokens -= bytes_f64;
+            // Track usage for M5 Phase 5
+            self.record_consumption(bytes);
             true
         } else {
             false
         }
+    }
+
+    /// Record bytes consumed (called when a packet is permitted)
+    fn record_consumption(&mut self, bytes: u32) {
+        let bytes_u64 = bytes as u64;
+        
+        // Update total consumption
+        self.total_bytes_consumed = self.total_bytes_consumed.saturating_add(bytes_u64);
+        
+        // Check if we're in a new 1-second window
+        if self.window_start.elapsed().as_secs_f64() >= 1.0 {
+            // Old window finished, record peak and reset
+            if self.current_window_bytes > self.peak_usage {
+                self.peak_usage = self.current_window_bytes;
+            }
+            self.current_window_bytes = bytes_u64;
+            self.window_start = Instant::now();
+        } else {
+            // Still in current window, accumulate
+            self.current_window_bytes = self.current_window_bytes.saturating_add(bytes_u64);
+        }
+    }
+
+    /// Get current usage (bytes in the active 1-second window)
+    pub fn get_current_usage(&self) -> u64 {
+        self.current_window_bytes
+    }
+
+    /// Get peak usage ever observed
+    pub fn get_peak_usage(&self) -> u64 {
+        self.peak_usage
+    }
+
+    /// Get total bytes consumed (all-time)
+    pub fn get_total_consumption(&self) -> u64 {
+        self.total_bytes_consumed
     }
 
     /// Enqueue a deferred packet

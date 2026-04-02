@@ -45,8 +45,21 @@ pub struct DeviceState {
 pub enum DaemonCommand {
     UpdateBandwidth(BandwidthUpdate),
     ListDevices,
+    GetDeviceStats(Ipv4Addr), // M5 Phase 5: Get stats for one device
+    GetAllDeviceStats,        // M5 Phase 5: Get stats for all devices
     Shutdown,
 }
+
+/// Response: device statistics (M5 Phase 5)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceStats {
+    pub ip: Ipv4Addr,
+    pub current_usage: u64,      // bytes in active 1-second window
+    pub peak_usage: u64,         // highest byte rate observed
+    pub total_consumption: u64,  // all-time bytes
+    pub bandwidth_limit: u64,    // configured bytes_per_sec
+}
+
 
 #[cfg(test)]
 mod tests {
