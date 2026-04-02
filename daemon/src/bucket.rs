@@ -65,6 +65,11 @@ impl DeviceBucket {
         self.queue.push(packet);
     }
 
+    /// Get the current queue depth (number of waiting packets)
+    pub fn queue_depth(&self) -> usize {
+        self.queue.len()
+    }
+
     /// Drain all ready packets from the queue
     pub fn drain_ready(&mut self) -> Vec<DeferredPacket> {
         self.refill();
