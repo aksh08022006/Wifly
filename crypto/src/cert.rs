@@ -2,7 +2,7 @@
 /// ====================================
 /// Uses rcgen to generate Ed25519 certs for device enrollment
 
-use rcgen::{generate_simple_self_signed_cert, Certificate};
+use rcgen::{generate_simple_self_signed, Certificate};
 use std::path::Path;
 use thiserror::Error;
 
@@ -39,7 +39,7 @@ impl CertBundle {
     /// Save certificate and key to disk
     /// Creates directory if it doesn't exist
     /// Fails if files already exist
-    pub fn save_to_disk(&self, dir: &Path) -> Result<(), CertError> {
+    pub fn save_to_disk(&self, _dir: &Path) -> Result<(), CertError> {
         // TODO: Implement save logic
         // Create ~/.netshaper/ directory
         // Write ca.pem and ca.key
@@ -47,7 +47,7 @@ impl CertBundle {
     }
 
     /// Load certificate from disk, or generate and save if missing
-    pub fn load_or_generate(dir: &Path) -> Result<Self, CertError> {
+    pub fn load_or_generate(_dir: &Path) -> Result<Self, CertError> {
         // TODO: Implement load logic
         // Check for existing ca.pem and ca.key
         // If missing, generate and save

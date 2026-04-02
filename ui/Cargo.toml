@@ -10,8 +10,8 @@ serde = { workspace = true }
 bincode = { workspace = true }
 thiserror = { workspace = true }
 proto = { path = "../proto" }
-tauri = { version = "1.6", features = ["system-tray"] }
-tauri-build = "1.6"
+tauri = { version = "2.5" }
+tauri-build = "2.5"
 
 [build-dependencies]
-tauri-build = "1.6"
+tauri-build = "2.5"

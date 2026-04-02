@@ -13,7 +13,7 @@ use crate::DeviceRegistry;
 /// 1. Refill all buckets based on elapsed time
 /// 2. Drain packets that can now be transmitted
 /// 3. Send PacketDecision messages back to kernel
-pub async fn run_scheduler(registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_scheduler(_registry: Arc<Mutex<DeviceRegistry>>) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Scheduler started");
 
     loop {

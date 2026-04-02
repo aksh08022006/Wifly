@@ -1,9 +1,8 @@
+#![allow(non_snake_case)]
+
 /// WFP Callout Library
 /// ===================
 /// Windows Filtering Platform kernel-mode callout for packet interception and rate limiting
-
-#![no_std]
-#![allow(non_snake_case)]
 
 mod engine;
 mod pipe;
