@@ -1,8 +1,6 @@
 // Sidebar Component
 // =================
 
-import React from 'react'
-
 interface SidebarProps {
   open: boolean
 }
