@@ -4148,6 +4148,7 @@ dependencies = [
  "bincode",
  "proto",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "thiserror 1.0.69",
