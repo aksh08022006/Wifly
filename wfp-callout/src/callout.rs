@@ -6,10 +6,30 @@
 use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{FWP_ACTION_PERMIT, FWP_ACTION_BLOCK, FWPM_FILTER_CONDITION0, FWP_VALUE0};
 use proto::{PacketMetadata, PacketDecision};
 use std::net::Ipv4Addr;
+use lazy_static::lazy_static;
+use crate::packet_tracker::PacketTracker;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Global pipe client (initialized in DllMain, used in classify_callback)
 /// Safety: This is set once during DLL load and never modified again.
 pub static mut PIPE_CLIENT: Option<crate::pipe::PipeClient> = None;
+
+/// Global packet tracker for concurrent packet state management
+/// Initialized with max 2000 packets and 1 second timeout
+lazy_static! {
+    static ref PACKET_TRACKER: PacketTracker = {
+        PacketTracker::new(2000, 1_000_000) // Max 2000 packets, 1s timeout in microseconds
+    };
+}
+
+/// Get current time in microseconds since UNIX_EPOCH
+/// Used for packet timeout tracking
+fn get_current_micros() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0)
+}
 
 /// Extract IPv4 address from FWP_VALUE0
 /// Safety: Caller must ensure the pointer is valid and the value type is uint32
@@ -97,19 +117,35 @@ pub unsafe extern "system" fn classify_callback(
         }
     };
 
+    // Get current time for timeout tracking
+    let current_time = get_current_micros();
+
+    // Try to add packet to tracker for state management
+    if let Err(e) = PACKET_TRACKER.add_pending(metadata.clone(), current_time) {
+        // Tracker full or locked - permit packet (safe fallback)
+        tracing::warn!("Failed to track packet {}: {}", metadata.packet_id, e);
+        return;
+    }
+
     // If we have a pipe client, try to query the daemon
     if let Some(ref pipe) = PIPE_CLIENT {
         // Try to get decision from daemon (with very short timeout)
         // If this fails or times out, default to PERMIT
         if let Some(decision) = pipe.query_decision(&metadata) {
-            *action = match decision {
-                PacketDecision::Permit { .. } => FWP_ACTION_PERMIT.0,
-                PacketDecision::Drop { .. } => FWP_ACTION_BLOCK.0,
-            };
+            // Apply decision and update tracker
+            if let Ok(Some(_packet)) = PACKET_TRACKER.apply_decision(decision.clone()) {
+                *action = match decision {
+                    PacketDecision::Permit { .. } => FWP_ACTION_PERMIT.0,
+                    PacketDecision::Drop { .. } => {
+                        // TODO: Phase 2 - Inject ICMP/RST response here
+                        FWP_ACTION_BLOCK.0
+                    }
+                };
+            }
         }
-        // If query fails, action remains FWP_ACTION_PERMIT (safe default)
     }
     // If PIPE_CLIENT doesn't exist yet, default to PERMIT (no limiting)
+    // TODO: Add periodic cleanup of expired packets (Phase 1.3)
 }
 
 #[cfg(test)]
