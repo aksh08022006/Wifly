@@ -3,7 +3,6 @@
 /// Handles communication with the WFP kernel callout and Tauri UI over named pipes
 
 use thiserror::Error;
-use proto::DaemonCommand;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::DeviceRegistry;
@@ -22,7 +21,7 @@ pub enum DaemonError {
 
 /// Run the IPC server that listens for messages from the kernel callout and UI
 pub async fn run_pipe_server(
-    registry: Arc<Mutex<DeviceRegistry>>,
+    _registry: Arc<Mutex<DeviceRegistry>>,
 ) -> Result<(), DaemonError> {
     // TODO: Implement named pipe server
     // On Windows: use tokio::net::windows::named_pipe

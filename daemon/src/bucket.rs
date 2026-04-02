@@ -5,7 +5,6 @@
 
 use std::time::Instant;
 use crossbeam_queue::SegQueue;
-use proto::PacketMetadata;
 
 /// A packet waiting to be released or dropped
 #[derive(Debug, Clone)]
@@ -71,7 +70,7 @@ impl DeviceBucket {
         self.refill();
         let mut ready = Vec::new();
 
-        while let Ok(packet) = self.queue.try_pop() {
+        while let Some(packet) = self.queue.pop() {
             let bytes_f64 = packet.byte_len as f64;
             if self.current_tokens >= bytes_f64 {
                 self.current_tokens -= bytes_f64;
