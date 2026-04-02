@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+*.o
+*.so
+*.rlib
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+Cargo.lock
+
+# Environment
+.env
+.env.local
+
+# Generated files
+*.generated.*
+dist/
+build/
