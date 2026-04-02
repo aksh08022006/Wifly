@@ -8,7 +8,9 @@ use proto::{PacketMetadata, PacketDecision};
 use std::net::Ipv4Addr;
 use lazy_static::lazy_static;
 use crate::packet_tracker::PacketTracker;
+use crate::packet_injector::PacketInjector;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
 
 /// Global pipe client (initialized in DllMain, used in classify_callback)
 /// Safety: This is set once during DLL load and never modified again.
@@ -19,6 +21,14 @@ pub static mut PIPE_CLIENT: Option<crate::pipe::PipeClient> = None;
 lazy_static! {
     static ref PACKET_TRACKER: PacketTracker = {
         PacketTracker::new(2000, 1_000_000) // Max 2000 packets, 1s timeout in microseconds
+    };
+}
+
+/// Global packet injector for sending TCP RST and ICMP responses
+/// Wrapped in Mutex for safe concurrent access
+lazy_static! {
+    static ref PACKET_INJECTOR: Mutex<PacketInjector> = {
+        Mutex::new(PacketInjector::new())
     };
 }
 
@@ -137,7 +147,13 @@ pub unsafe extern "system" fn classify_callback(
                 *action = match decision {
                     PacketDecision::Permit { .. } => FWP_ACTION_PERMIT.0,
                     PacketDecision::Drop { .. } => {
-                        // TODO: Phase 2 - Inject ICMP/RST response here
+                        // Phase 2: Inject TCP RST or ICMP Unreachable for dropped packets
+                        // Try to acquire injector lock (non-blocking)
+                        if let Ok(mut injector_guard) = PACKET_INJECTOR.try_lock() {
+                            // Attempt injection (best-effort, non-critical)
+                            let _ = injector_guard.apply_drop_decision(&metadata, false);
+                        }
+                        // Whether injection succeeds or fails, block the packet
                         FWP_ACTION_BLOCK.0
                     }
                 };
