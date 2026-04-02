@@ -1,10 +1,9 @@
+use crossbeam_queue::SegQueue;
 /// Token Bucket Rate Limiter
 /// ==========================
 /// Implements the token bucket algorithm for per-device bandwidth limiting.
 /// Each device gets a bucket with a maximum capacity (burst) that refills at a constant rate.
-
 use std::time::Instant;
-use crossbeam_queue::SegQueue;
 
 /// A packet waiting to be released or dropped
 #[derive(Debug, Clone)]
@@ -17,10 +16,10 @@ pub struct DeferredPacket {
 /// Token bucket for one device
 #[derive(Debug)]
 pub struct DeviceBucket {
-    pub allowed_bytes_per_sec: u64,   // configured bandwidth ceiling
-    pub max_burst_bytes: u64,          // bucket capacity (usually 2x one-second allowance)
-    pub current_tokens: f64,           // fractional bytes available right now
-    pub last_refill: Instant,          // when we last added tokens
+    pub allowed_bytes_per_sec: u64,      // configured bandwidth ceiling
+    pub max_burst_bytes: u64,            // bucket capacity (usually 2x one-second allowance)
+    pub current_tokens: f64,             // fractional bytes available right now
+    pub last_refill: Instant,            // when we last added tokens
     pub queue: SegQueue<DeferredPacket>, // packets waiting for tokens
 }
 
@@ -40,8 +39,7 @@ impl DeviceBucket {
     /// Refill tokens based on elapsed time
     pub fn refill(&mut self) {
         let elapsed = self.last_refill.elapsed().as_secs_f64();
-        self.current_tokens = (self.current_tokens
-            + elapsed * self.allowed_bytes_per_sec as f64)
+        self.current_tokens = (self.current_tokens + elapsed * self.allowed_bytes_per_sec as f64)
             .min(self.max_burst_bytes as f64);
         self.last_refill = Instant::now();
     }
@@ -63,6 +61,11 @@ impl DeviceBucket {
     /// Enqueue a deferred packet
     pub fn enqueue(&self, packet: DeferredPacket) {
         self.queue.push(packet);
+    }
+
+    /// Get the current queue depth (number of waiting packets)
+    pub fn queue_depth(&self) -> usize {
+        self.queue.len()
     }
 
     /// Drain all ready packets from the queue

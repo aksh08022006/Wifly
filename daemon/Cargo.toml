@@ -17,6 +17,15 @@ crossbeam-queue = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 proto = { path = "../proto" }
+crypto = { path = "../crypto" }
+
+# Windows-specific dependencies
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winsock2", "winnt", "handleapi"] }
+
+# Unix-specific dependencies
+[target.'cfg(unix)'.dependencies]
+tokio = { version = "1.36", features = ["net", "sync", "time", "rt"] }
 
 [dev-dependencies]
 tokio = { version = "1.36", features = ["full"] }
