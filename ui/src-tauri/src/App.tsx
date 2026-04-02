@@ -1,12 +1,12 @@
 // Main App Component - M5 Phase 3 Dashboard with IPC
 // ==================================================
 
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
-import DeviceList from './components/DeviceList'
-import Header from './components/Header'
-import Sidebar from './components/Sidebar'
-import './styles/App.css'
+import DeviceList from '../components/DeviceList'
+import Header from '../components/Header'
+import Sidebar from '../components/Sidebar'
+import '../styles/App.css'
 
 interface DeviceInfo {
   ip: string
@@ -21,7 +21,6 @@ export default function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Fetch devices from daemon via Tauri IPC
@@ -104,7 +103,7 @@ export default function App() {
           ) : (
             <DeviceList 
               devices={devices} 
-              onSelectDevice={setSelectedDevice}
+              onSelectDevice={() => {}}
               onApprove={handleApproveDevice}
               onDeny={handleDenyDevice}
             />

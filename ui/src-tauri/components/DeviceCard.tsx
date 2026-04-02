@@ -1,7 +1,7 @@
 // DeviceCard Component - With Approve/Deny Actions
 // ==================================================
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 
 interface DeviceInfo {
   ip: string
