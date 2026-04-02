@@ -5,8 +5,7 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "devUrl": "http://localhost:5173",
-    "frontendDist": "../src-tauri/dist"
+    "frontendDist": "./src-tauri/dist"
   },
   "app": {
     "windows": [
