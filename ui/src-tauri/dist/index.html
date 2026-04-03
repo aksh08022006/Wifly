@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NetShaper - Device Management</title>
+  <meta name="description" content="NetShaper - Network Device Management">
+  <title>NetShaper</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -120,19 +121,6 @@
       margin: 12px 0;
       font-size: 13px;
     }
-    .progress-bar {
-      width: 100%;
-      height: 6px;
-      background: #1e293b;
-      border-radius: 3px;
-      overflow: hidden;
-      margin-top: 6px;
-    }
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-      transition: width 0.3s;
-    }
 
     .card-actions {
       display: flex;
@@ -203,6 +191,32 @@
       from { opacity: 0; transform: translateX(20px); }
       to { opacity: 1; transform: translateX(0); }
     }
+
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 2000;
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-content {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 30px;
+      max-width: 600px;
+      width: 90%;
+    }
+    .modal h3 {
+      margin-bottom: 20px;
+      color: #e2e8f0;
+    }
+    .qr-container {
+      text-align: center;
+      margin: 20px 0;
+    }
   </style>
 </head>
 <body>
@@ -213,8 +227,39 @@
     </div>
 
     <div class="controls">
-      <button class="btn btn-primary" onclick="alert('Button works!'); loadDevices()">🔄 Refresh Devices</button>
-      <button class="btn btn-primary" onclick="alert('Toggling mock'); toggleMockData()">📊 Toggle Mock Data</button>
+      <button class="btn btn-primary" id="btn-refresh" type="button">🔄 Refresh</button>
+      <button class="btn btn-primary" id="btn-qr" type="button">📱 Show QR Code</button>
+      <button class="btn btn-primary" id="btn-stats" type="button" style="background: #8b5cf6;">📊 Stats</button>
+    </div>
+
+    <!-- QR Code Modal -->
+    <div id="qr-modal" class="modal">
+      <div class="modal-content">
+        <h3>📱 Scan to Pair Device</h3>
+        <div class="qr-container">
+          <div id="qr-content" style="color: #94a3b8; min-height: 300px; display: flex; align-items: center; justify-content: center;">Loading QR code...</div>
+        </div>
+        <div style="margin-top: 20px; font-size: 12px; color: #94a3b8; line-height: 1.6;">
+          <p><strong>Instructions:</strong></p>
+          <p>1. Open WiFi settings on your mobile device</p>
+          <p>2. Connect to the hotspot SSID shown in the QR code</p>
+          <p>3. Open NetShaper app and scan this QR code</p>
+          <p>4. A pairing request will appear on this dashboard</p>
+          <p>5. Click "Approve" to connect the device</p>
+        </div>
+        <button class="btn btn-primary" id="btn-qr-close" style="width: 100%; margin-top: 20px;">Close</button>
+      </div>
+    </div>
+
+    <!-- Stats Modal -->
+    <div id="stats-modal" class="modal">
+      <div class="modal-content">
+        <h3>📊 Router Statistics</h3>
+        <div id="stats-content" style="color: #94a3b8; font-size: 14px; line-height: 1.8;">
+          Loading stats...
+        </div>
+        <button class="btn btn-primary" id="btn-stats-close" style="width: 100%; margin-top: 20px;">Close</button>
+      </div>
     </div>
 
     <div class="stats" id="stats"></div>
@@ -229,55 +274,59 @@
   </div>
 
   <script>
-    let useMockData = true; // Default to mock data since Tauri API isn't loading
+    // Tauri initialization
+    let tauriApi = null;
+    let tauriReady = false;
 
-    const mockDevices = [];
+    // Wait for Tauri to load
+    async function waitForTauri() {
+      return new Promise((resolve) => {
+        const checkTauri = () => {
+          if (typeof window !== 'undefined' && window.__TAURI__) {
+            console.log('[Tauri] API is available');
+            tauriApi = window.__TAURI__;
+            tauriReady = true;
+            resolve(true);
+          } else {
+            console.log('[Tauri] Waiting for API...');
+            setTimeout(checkTauri, 100);
+          }
+        };
+        checkTauri();
+      });
+    }
 
-    async function invoke(cmd, args = {}) {
-      // Direct Tauri v2 invoke
-      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
-        console.log(`Tauri v2 invoke: ${cmd}`, args);
-        return window.__TAURI__.core.invoke(cmd, args);
+    async function invokeTauri(command, args = {}) {
+      if (!tauriReady) {
+        await waitForTauri();
       }
       
-      // Tauri v1 fallback
-      if (window.__TAURI__ && window.__TAURI__.invoke) {
-        console.log(`Tauri v1 invoke: ${cmd}`, args);
-        return window.__TAURI__.invoke(cmd, args);
+      if (!tauriApi || !tauriApi.core || !tauriApi.core.invoke) {
+        throw new Error('Tauri API not initialized properly');
       }
       
-      // No Tauri API found
-      const msg = 'Tauri API not available at all';
-      console.error(msg);
-      throw new Error(msg);
+      console.log(`[Tauri] invoke: ${command}`, args);
+      try {
+        const result = await tauriApi.core.invoke(command, args);
+        console.log(`[Tauri] ${command} result:`, result);
+        return result;
+      } catch (err) {
+        console.error(`[Tauri Error] ${command}:`, err);
+        throw err;
+      }
     }
 
     async function loadDevices() {
       try {
-        let devices = [];
-        
-        if (useMockData) {
-          // Using mock data mode - don't try to invoke Tauri
-          devices = mockDevices;
-          renderDevices(devices);
-          showNotification('📊 Using Mock Data Mode (Tauri disabled)', false);
-        } else {
-          // Try to invoke Tauri
-          try {
-            const response = await invoke('list_devices');
-            devices = response || [];
-            renderDevices(devices);
-            showNotification('✓ Devices loaded from daemon', false);
-          } catch (invokeErr) {
-            console.error('invoke failed:', invokeErr);
-            showNotification(`✗ Daemon error: ${invokeErr.message}`, true);
-            renderDevices([]);
-          }
-        }
+        showNotification('⏳ Loading devices...', false);
+        const data = await invokeTauri('http_get_devices');
+        console.log('[loadDevices] Got data:', data);
+        renderDevices(data || []);
+        showNotification('✓ Devices loaded', false);
       } catch (err) {
-        console.error('loadDevices error:', err);
+        console.error('[loadDevices error]', err);
+        showNotification(`❌ Failed to load devices: ${err.message}`, true);
         renderDevices([]);
-        showNotification(`✗ Error: ${err}`, true);
       }
     }
 
@@ -285,7 +334,6 @@
       const approved = devices.filter(d => d.approved);
       const pending = devices.filter(d => !d.approved);
 
-      // Update stats
       document.getElementById('stats').innerHTML = `
         <div class="stat-box">
           <div class="stat-number">${approved.length}</div>
@@ -301,80 +349,134 @@
         </div>
       `;
 
-      // Render approved devices
-      document.getElementById('approved-devices').innerHTML = devices
-        .filter(d => d.approved)
+      document.getElementById('approved-devices').innerHTML = approved
         .map(d => renderDeviceCard(d))
-        .join('') || '<div class="empty-state">No approved devices yet</div>';
+        .join('') || '<div class="empty-state">No approved devices</div>';
 
-      // Render pending devices
-      document.getElementById('pending-devices').innerHTML = devices
-        .filter(d => !d.approved)
+      document.getElementById('pending-devices').innerHTML = pending
         .map(d => renderDeviceCard(d))
-        .join('') || '<div class="empty-state">No pending devices</div>';
+        .join('') || '<div class="empty-state">No pending requests</div>';
+        
+      attachActionListeners();
     }
 
     function renderDeviceCard(device) {
       const bandwidthMB = (device.bandwidth_limit / 1_000_000).toFixed(1);
-      const usageMB = (device.current_usage / 1_000_000).toFixed(1);
-      const usagePercent = device.bandwidth_limit > 0 
-        ? ((device.current_usage / device.bandwidth_limit) * 100).toFixed(0)
-        : 0;
       
-      const enrolledDate = new Date(device.enrolled_at).toLocaleDateString();
-
       return `
         <div class="device-card ${device.approved ? 'approved' : 'pending'}">
           <div class="card-header">
-            <div>
-              <div style="font-size: 24px; margin-bottom: 4px;">📱</div>
-            </div>
-            <div style="flex: 1;">
+            <div style="font-size: 24px;">📱</div>
+            <div style="flex: 1; margin-left: 10px;">
               <div class="device-name">${device.hostname || device.ip}</div>
               <div class="device-ip">${device.ip}</div>
             </div>
             <div class="status-badge ${device.approved ? 'approved' : 'pending'}">
-              ${device.approved ? '✓ Approved' : '⏳ Pending'}
+              ${device.approved ? '✓' : '⏳'}
             </div>
           </div>
 
           <div class="bandwidth-info">
-            <div>Bandwidth: ${usageMB} MB/s / ${bandwidthMB} MB/s</div>
-            <div style="color: #64748b; font-size: 11px; margin-top: 4px;">Usage: ${usagePercent}%</div>
-            <div class="progress-bar">
-              <div class="progress-fill" style="width: ${usagePercent}%"></div>
-            </div>
+            <div>Bandwidth Limit: ${bandwidthMB} MB/s</div>
+            <small style="color: #64748b;">Enrolled: ${new Date(device.enrolled_at).toLocaleDateString()}</small>
           </div>
-
-          <small style="color: #64748b;">Enrolled: ${enrolledDate}</small>
 
           ${!device.approved ? `
             <div class="card-actions">
-              <button class="btn btn-success" onclick="approveDevice('${device.ip}')">✓ Approve</button>
-              <button class="btn btn-danger" onclick="denyDevice('${device.ip}')">✕ Deny</button>
+              <button class="btn btn-success btn-approve" data-id="${device.id}" type="button">✓ Approve</button>
+              <button class="btn btn-danger btn-deny" data-id="${device.id}" type="button">✕ Deny</button>
             </div>
           ` : ''}
         </div>
       `;
     }
 
-    async function approveDevice(ip) {
+    function attachActionListeners() {
+      document.querySelectorAll('.btn-approve').forEach(btn => {
+        btn.removeEventListener('click', handleApprove);
+        btn.addEventListener('click', handleApprove);
+      });
+      
+      document.querySelectorAll('.btn-deny').forEach(btn => {
+        btn.removeEventListener('click', handleDeny);
+        btn.addEventListener('click', handleDeny);
+      });
+    }
+
+    function handleApprove(e) {
+      e.preventDefault();
+      const id = this.getAttribute('data-id');
+      approveDevice(id);
+    }
+
+    function handleDeny(e) {
+      e.preventDefault();
+      const id = this.getAttribute('data-id');
+      denyDevice(id);
+    }
+
+    async function approveDevice(id) {
       try {
-        await invoke('approve_device', { ip });
-        showNotification(`✓ Device ${ip} approved`, false);
+        const bandwidth = prompt('Bandwidth limit (MB/s):', '10');
+        if (!bandwidth) return;
+        await invokeTauri('http_approve_device', { device_id: id, bandwidth_mb: parseInt(bandwidth) });
+        showNotification('✓ Device approved', false);
         await loadDevices();
       } catch (err) {
-        showNotification(`✗ Error approving device: ${err}`, true);
+        showNotification(`❌ Approval failed: ${err.message}`, true);
       }
     }
 
-    async function denyDevice(ip) {
+    async function denyDevice(id) {
       try {
-        await invoke('deny_device', { ip });
-        showNotification(`✓ Device ${ip} denied`, false);
+        await invokeTauri('http_deny_device', { device_id: id });
+        showNotification('✓ Device denied', false);
         await loadDevices();
       } catch (err) {
-        showNotification(`✗ Error denying device: ${err}`, true);
+        showNotification(`❌ Denial failed: ${err.message}`, true);
+      }
+    }
+
+    async function showQrCode() {
+      document.getElementById('qr-modal').style.display = 'flex';
+      try {
+        showNotification('⏳ Loading QR code...', false);
+        const data = await invokeTauri('http_get_qr');
+        console.log('[showQrCode] Response:', data);
+        const qrImage = data.qr_image || data.data?.qr_image || 'No QR code available';
+        // If it's a data URL, render as image; otherwise render as HTML
+        if (qrImage.startsWith('data:')) {
+          document.getElementById('qr-content').innerHTML = `<img src="${qrImage}" style="max-width: 100%; height: auto; border-radius: 8px; border: 2px solid #334155;">`;
+        } else {
+          document.getElementById('qr-content').innerHTML = qrImage;
+        }
+        showNotification('✓ QR code loaded', false);
+      } catch (err) {
+        console.error('[showQrCode error]', err);
+        document.getElementById('qr-content').innerHTML = `<div style="color: #ef4444; padding: 20px; text-align: center;">Failed to load QR code: ${err.message}</div>`;
+      }
+    }
+
+    async function showStats() {
+      document.getElementById('stats-modal').style.display = 'flex';
+      try {
+        showNotification('⏳ Loading stats...', false);
+        const stats = await invokeTauri('http_get_stats');
+        const html = `
+          <div style="background: rgba(59, 130, 246, 0.1); border-left: 4px solid #3b82f6; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+            <p><strong>Status:</strong> ${stats.status || 'Unknown'}</p>
+            <p><strong>Active Devices:</strong> ${stats.active_devices || 0}</p>
+            <p><strong>Total Bandwidth:</strong> ${stats.total_bandwidth_mb || 0} MB/s</p>
+          </div>
+          <div style="background: rgba(16, 185, 129, 0.1); border-left: 4px solid #10b981; padding: 15px; border-radius: 6px;">
+            <p><strong>API Endpoint:</strong> http://127.0.0.1:8080</p>
+            <p><strong>Router Type:</strong> NetShaper HTTP Proxy</p>
+          </div>
+        `;
+        document.getElementById('stats-content').innerHTML = html;
+        showNotification('✓ Stats loaded', false);
+      } catch (err) {
+        document.getElementById('stats-content').innerHTML = `<div style="color: #ef4444; padding: 20px;">Failed to load stats: ${err.message}</div>`;
       }
     }
 
@@ -385,32 +487,85 @@
       setTimeout(() => notif.classList.remove('show'), 3000);
     }
 
-    function toggleMockData() {
-      useMockData = !useMockData;
-      showNotification(useMockData ? '📊 Using Mock Data' : '🔗 Using Real Data', false);
-      loadDevices();
-    }
-
-    // Load devices on page load
-    window.addEventListener('load', () => {
-      console.log('Page loaded');
-      console.log('window.__TAURI__:', typeof window.__TAURI__);
+    function initializeButtons() {
+      const btnRefresh = document.getElementById('btn-refresh');
+      const btnQr = document.getElementById('btn-qr');
+      const btnStats = document.getElementById('btn-stats');
       
-      // Check if Tauri API exists
-      if (window.__TAURI__ && (window.__TAURI__.invoke || (window.__TAURI__.core && window.__TAURI__.core.invoke))) {
-        console.log('✓ Tauri API detected - real mode');
-        useMockData = false;
-        showNotification('✓ Tauri API found - connected', false);
-      } else {
-        console.log('✗ Tauri API not detected - using mock mode');
-        useMockData = true;
-        showNotification('⚠️ Tauri API not found - using Mock Data only', true);
+      if (btnRefresh) {
+        btnRefresh.addEventListener('click', (e) => {
+          e.preventDefault();
+          loadDevices();
+        });
       }
       
-      renderDevices([]);
-    });
+      if (btnQr) {
+        btnQr.addEventListener('click', (e) => {
+          e.preventDefault();
+          showQrCode();
+        });
+      }
 
-    // Manual refresh only (user clicks button)
+      if (btnStats) {
+        btnStats.addEventListener('click', (e) => {
+          e.preventDefault();
+          showStats();
+        });
+      }
+
+      document.getElementById('btn-qr-close').addEventListener('click', (e) => {
+        e.preventDefault();
+        document.getElementById('qr-modal').style.display = 'none';
+      });
+
+      document.getElementById('btn-stats-close').addEventListener('click', (e) => {
+        e.preventDefault();
+        document.getElementById('stats-modal').style.display = 'none';
+      });
+
+      // Close modals on background click
+      document.getElementById('qr-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'qr-modal') document.getElementById('qr-modal').style.display = 'none';
+      });
+
+      document.getElementById('stats-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'stats-modal') document.getElementById('stats-modal').style.display = 'none';
+      });
+    }
+
+    // Initialize when DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', async () => {
+        console.log('[Init] DOMContentLoaded - waiting for Tauri...');
+        initializeButtons();
+        showNotification('🚀 NetShaper Starting...', false);
+        
+        try {
+          await waitForTauri();
+          console.log('[Init] Tauri ready - loading devices');
+          showNotification('✓ Connected to daemon', false);
+          await loadDevices();
+          // Auto-refresh every 5 seconds
+          setInterval(loadDevices, 5000);
+        } catch (err) {
+          console.error('[Init] Startup error:', err);
+          showNotification(`❌ Failed to initialize: ${err.message}`, true);
+        }
+      });
+    } else {
+      console.log('[Init] Document already loaded');
+      initializeButtons();
+      (async () => {
+        try {
+          await waitForTauri();
+          showNotification('✓ Connected to daemon', false);
+          await loadDevices();
+          setInterval(loadDevices, 5000);
+        } catch (err) {
+          showNotification(`❌ Failed to initialize: ${err.message}`, true);
+        }
+      })();
+    }
   </script>
 </body>
 </html>

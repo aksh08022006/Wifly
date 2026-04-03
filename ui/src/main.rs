@@ -1,6 +1,7 @@
-// Tauri Application Entry Point - M5 Phase 3
-// ============================================
-// NetShaper UI Dashboard with IPC Integration
+// Tauri Application Entry Point
+// ==============================
+// NetShaper UI Dashboard with HTTP API Integration
+// All communication via HTTP to daemon on http://172.17.44.89:8080
 
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
@@ -8,224 +9,183 @@
 )]
 
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::fs::File;
-use ui::DeviceInfo;
 
-// Default bandwidth limit for approved devices (10 MB/s)
-const DEFAULT_BANDWIDTH_LIMIT: u64 = 10_000_000;
+const DAEMON_URL: &str = "http://172.17.44.89:8080";
+const HTTP_TIMEOUT: u64 = 5; // seconds
 
-#[derive(Debug, Serialize, Deserialize)]
-struct RawDeviceData {
-    ip: String,
-    hostname: Option<String>,
-    approved: bool,
-    enrolled_at: String,
-    bandwidth_limit: u64,
-    current_usage: u64,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Device {
+    pub id: String,
+    pub ip: String,
+    pub platform: String,
+    pub device_name: String,
+    pub approved: bool,
+    pub bandwidth_limit: u64,  // bytes per second
+    pub enrolled_at: String,
 }
 
-/// Fetch list of devices from daemon IPC
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QrResponse {
+    pub qr_image: String,
+    pub pairing_url: String,
+}
+
+// ============ Tauri Commands ============
+
+/// GET /qr - Fetch QR code + pairing URL
 #[tauri::command]
-async fn list_devices() -> Result<Vec<DeviceInfo>, String> {
-    tokio::task::spawn_blocking(fetch_devices_from_daemon_impl)
-        .await
-        .map_err(|e| format!("Task error: {}", e))?
-}
-
-fn fetch_devices_from_daemon_impl() -> Result<Vec<DeviceInfo>, String> {
-    let pipe_name = "\\\\.\\pipe\\netshaper";
+async fn http_get_qr() -> Result<QrResponse, String> {
+    let url = format!("{}/qr", DAEMON_URL);
+    let client = reqwest::Client::new();
     
-    // Open named pipe (blocking I/O)
-    let mut pipe = File::open(pipe_name)
-        .map_err(|e| format!("Failed to connect to daemon: {}", e))?;
-
-    // Send list_devices command
-    let request = bincode::serialize(&"list_devices".to_string())
-        .map_err(|e| format!("Serialization error: {}", e))?;
+    let response = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
     
-    pipe.write_all(&request)
-        .map_err(|e| format!("Failed to send command: {}", e))?;
-
-    // Read response
-    let mut buffer = vec![0; 16384];
-    let n = pipe.read(&mut buffer)
-        .map_err(|e| format!("Failed to read response: {}", e))?;
-
-    buffer.truncate(n);
-
-    // Deserialize and convert
-    let raw_devices: Vec<(String, Option<String>, bool, String, u64, u64)> = bincode::deserialize(&buffer)
-        .map_err(|e| format!("Deserialization error: {}", e))?;
-
-    let devices = raw_devices
-        .into_iter()
-        .map(|(ip, hostname, approved, enrolled_at, bandwidth_limit, current_usage)| DeviceInfo {
-            ip,
-            hostname,
-            approved,
-            enrolled_at,
-            bandwidth_limit,
-            current_usage,
-        })
-        .collect();
-
-    Ok(devices)
-}
-
-/// Approve a device by IP address
-#[tauri::command]
-async fn approve_device(ip: String) -> Result<(), String> {
-    let ip_clone = ip.clone();
-    tokio::task::spawn_blocking(move || send_command_impl(format!("approve:{}", ip_clone)))
+    response
+        .json::<QrResponse>()
         .await
-        .map_err(|e| format!("Task error: {}", e))?
+        .map_err(|e| format!("Failed to parse QR response: {}", e))
 }
 
-/// Deny/block a device by IP address
+/// GET /devices - Fetch list of devices
 #[tauri::command]
-async fn deny_device(ip: String) -> Result<(), String> {
-    let ip_clone = ip.clone();
-    tokio::task::spawn_blocking(move || send_command_impl(format!("deny:{}", ip_clone)))
-        .await
-        .map_err(|e| format!("Task error: {}", e))?
-}
-
-/// M5 Phase 5: Get bandwidth stats for a device
-#[tauri::command]
-async fn get_device_stats(ip: String) -> Result<(u64, u64, u64), String> {
-    let ip_clone = ip.clone();
-    tokio::task::spawn_blocking(move || get_device_stats_impl(ip_clone))
-        .await
-        .map_err(|e| format!("Task error: {}", e))?
-}
-
-/// M5 Phase 5: Get bandwidth stats for all devices
-#[tauri::command]
-async fn get_all_device_stats() -> Result<Vec<(String, u64, u64, u64, u64)>, String> {
-    tokio::task::spawn_blocking(get_all_device_stats_impl)
-        .await
-        .map_err(|e| format!("Task error: {}", e))?
-}
-
-fn send_command_impl(command: String) -> Result<(), String> {
-    use std::net::Ipv4Addr;
-    use proto::DaemonCommand;
-    use proto::BandwidthUpdate;
+async fn http_get_devices() -> Result<Vec<Device>, String> {
+    let url = format!("{}/devices", DAEMON_URL);
+    let client = reqwest::Client::new();
     
-    let pipe_name = "\\\\.\\pipe\\netshaper";
-    let mut pipe = File::open(pipe_name)
-        .map_err(|e| format!("Connection failed: {}", e))?;
+    let response = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    
+    #[derive(Deserialize)]
+    struct DevicesResponse {
+        devices: Vec<Device>,
+    }
+    
+    let data = response
+        .json::<DevicesResponse>()
+        .await
+        .map_err(|e| format!("Failed to parse devices response: {}", e))?;
+    
+    Ok(data.devices)
+}
 
-    // Parse command: "approve:192.168.1.100" or "deny:192.168.1.100"
-    let (action, ip_str) = if let Some(pos) = command.find(':') {
-        (&command[..pos], &command[pos+1..])
+/// POST /devices/:id/approve - Approve device
+#[tauri::command]
+async fn http_approve_device(device_id: String, bandwidth_mb: u64) -> Result<(), String> {
+    let url = format!("{}/devices/{}/approve", DAEMON_URL, device_id);
+    let client = reqwest::Client::new();
+    
+    #[derive(Serialize)]
+    struct ApproveBody {
+        bandwidth_limit_mb: u64,
+    }
+    
+    let body = ApproveBody {
+        bandwidth_limit_mb: bandwidth_mb,
+    };
+    
+    let response = client
+        .post(&url)
+        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    
+    if response.status().is_success() {
+        Ok(())
     } else {
-        return Err("Invalid command format".to_string());
-    };
-
-    let ip: Ipv4Addr = ip_str.parse()
-        .map_err(|_| format!("Invalid IP: {}", ip_str))?;
-
-    let cmd = match action {
-        "approve" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
-            ip,
-            bytes_per_sec: DEFAULT_BANDWIDTH_LIMIT,
-        }),
-        "deny" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
-            ip,
-            bytes_per_sec: 0, // 0 = blocked
-        }),
-        _ => return Err(format!("Unknown action: {}", action)),
-    };
-
-    let request = bincode::serialize(&cmd)
-        .map_err(|e| format!("Serialization error: {}", e))?;
-    
-    pipe.write_all(&request)
-        .map_err(|e| format!("Send error: {}", e))?;
-
-    Ok(())
+        Err(format!("Approval failed: {}", response.status()))
+    }
 }
 
-fn get_device_stats_impl(ip: String) -> Result<(u64, u64, u64), String> {
-    use std::net::Ipv4Addr;
-    use proto::DaemonCommand;
+/// POST /devices/:id/deny - Deny device
+#[tauri::command]
+async fn http_deny_device(device_id: String) -> Result<(), String> {
+    let url = format!("{}/devices/{}/deny", DAEMON_URL, device_id);
+    let client = reqwest::Client::new();
     
-    let parsed_ip: Ipv4Addr = ip.parse()
-        .map_err(|_| format!("Invalid IP: {}", ip))?;
-
-    let pipe_name = "\\\\.\\pipe\\netshaper";
-    let mut pipe = File::open(pipe_name)
-        .map_err(|e| format!("Connection failed: {}", e))?;
-
-    let cmd = DaemonCommand::GetDeviceStats(parsed_ip);
-    let request = bincode::serialize(&cmd)
-        .map_err(|e| format!("Serialization error: {}", e))?;
+    let response = client
+        .post(&url)
+        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
     
-    pipe.write_all(&request)
-        .map_err(|e| format!("Send error: {}", e))?;
-
-    let mut buffer = vec![0; 1024];
-    let n = pipe.read(&mut buffer)
-        .map_err(|e| format!("Read error: {}", e))?;
-    
-    buffer.truncate(n);
-    
-    let stats: proto::DeviceStats = bincode::deserialize(&buffer)
-        .map_err(|e| format!("Deserialization error: {}", e))?;
-    
-    Ok((stats.current_usage, stats.peak_usage, stats.total_consumption))
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Denial failed: {}", response.status()))
+    }
 }
 
-fn get_all_device_stats_impl() -> Result<Vec<(String, u64, u64, u64, u64)>, String> {
-    use proto::DaemonCommand;
+/// PUT /devices/:id/bandwidth - Set bandwidth limit
+#[tauri::command]
+async fn http_set_bandwidth(device_id: String, bytes_per_sec: u64) -> Result<(), String> {
+    let url = format!("{}/devices/{}/bandwidth", DAEMON_URL, device_id);
+    let client = reqwest::Client::new();
     
-    let pipe_name = "\\\\.\\pipe\\netshaper";
-    let mut pipe = File::open(pipe_name)
-        .map_err(|e| format!("Connection failed: {}", e))?;
-
-    let cmd = DaemonCommand::GetAllDeviceStats;
-    let request = bincode::serialize(&cmd)
-        .map_err(|e| format!("Serialization error: {}", e))?;
+    #[derive(Serialize)]
+    struct BandwidthBody {
+        bytes_per_sec: u64,
+    }
     
-    pipe.write_all(&request)
-        .map_err(|e| format!("Send error: {}", e))?;
-
-    let mut buffer = vec![0; 65536];
-    let n = pipe.read(&mut buffer)
-        .map_err(|e| format!("Read error: {}", e))?;
+    let body = BandwidthBody { bytes_per_sec };
     
-    buffer.truncate(n);
+    let response = client
+        .put(&url)
+        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
     
-    let stats_list: Vec<proto::DeviceStats> = bincode::deserialize(&buffer)
-        .map_err(|e| format!("Deserialization error: {}", e))?;
-    
-    let result = stats_list
-        .into_iter()
-        .map(|stats| {
-            (
-                stats.ip.to_string(),
-                stats.current_usage,
-                stats.peak_usage,
-                stats.total_consumption,
-                stats.bandwidth_limit,
-            )
-        })
-        .collect();
-    
-    Ok(result)
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Bandwidth update failed: {}", response.status()))
+    }
 }
+
+/// GET /stats - Get statistics
+#[tauri::command]
+async fn http_get_stats() -> Result<serde_json::Value, String> {
+    let url = format!("{}/stats", DAEMON_URL);
+    let client = reqwest::Client::new();
+    
+    let response = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+    
+    response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Failed to parse stats response: {}", e))
+}
+
+// ============ Main Application ============
 
 #[cfg_attr(mobile, tauri::mobile::app_entry)]
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
-            list_devices,
-            approve_device,
-            deny_device,
-            get_device_stats,
-            get_all_device_stats,
+            http_get_qr,
+            http_get_devices,
+            http_approve_device,
+            http_deny_device,
+            http_set_bandwidth,
+            http_get_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

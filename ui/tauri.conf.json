@@ -5,9 +5,10 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "frontendDist": "./src-tauri/dist"
+    "frontendDist": "../src"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "NetShaper - Device Management",
@@ -20,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' data: ipc:"
+      "csp": "default-src 'self' data: blob: ipc: ipc.localhost http://127.0.0.1:8080"
     }
   },
   "bundle": {
