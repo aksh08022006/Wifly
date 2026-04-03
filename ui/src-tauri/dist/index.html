@@ -213,8 +213,8 @@
     </div>
 
     <div class="controls">
-      <button class="btn btn-primary" onclick="loadDevices()">🔄 Refresh Devices</button>
-      <button class="btn btn-primary" onclick="toggleMockData()">📊 Toggle Mock Data</button>
+      <button class="btn btn-primary" onclick="alert('Button works!'); loadDevices()">🔄 Refresh Devices</button>
+      <button class="btn btn-primary" onclick="alert('Toggling mock'); toggleMockData()">📊 Toggle Mock Data</button>
     </div>
 
     <div class="stats" id="stats"></div>
@@ -229,61 +229,55 @@
   </div>
 
   <script>
-    let useMockData = false;
+    let useMockData = true; // Default to mock data since Tauri API isn't loading
 
-    const mockDevices = [
-      {
-        ip: '192.168.1.100',
-        hostname: 'iPhone-12',
-        approved: true,
-        enrolled_at: '2026-04-03T15:30:45Z',
-        bandwidth_limit: 10_000_000,
-        current_usage: 2_500_000,
-      },
-      {
-        ip: '192.168.1.101',
-        hostname: 'MacBook-Pro',
-        approved: false,
-        enrolled_at: '2026-04-03T16:00:00Z',
-        bandwidth_limit: 0,
-        current_usage: 0,
-      },
-      {
-        ip: '192.168.1.102',
-        hostname: 'iPad-Air',
-        approved: true,
-        enrolled_at: '2026-04-02T10:15:22Z',
-        bandwidth_limit: 5_000_000,
-        current_usage: 1_200_000,
-      },
-      {
-        ip: '192.168.1.103',
-        hostname: 'Android-Phone',
-        approved: false,
-        enrolled_at: '2026-04-03T17:45:00Z',
-        bandwidth_limit: 0,
-        current_usage: 0,
-      },
-    ];
+    const mockDevices = [];
+
+    async function invoke(cmd, args = {}) {
+      // Direct Tauri v2 invoke
+      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        console.log(`Tauri v2 invoke: ${cmd}`, args);
+        return window.__TAURI__.core.invoke(cmd, args);
+      }
+      
+      // Tauri v1 fallback
+      if (window.__TAURI__ && window.__TAURI__.invoke) {
+        console.log(`Tauri v1 invoke: ${cmd}`, args);
+        return window.__TAURI__.invoke(cmd, args);
+      }
+      
+      // No Tauri API found
+      const msg = 'Tauri API not available at all';
+      console.error(msg);
+      throw new Error(msg);
+    }
 
     async function loadDevices() {
       try {
-        let devices;
+        let devices = [];
         
         if (useMockData) {
+          // Using mock data mode - don't try to invoke Tauri
           devices = mockDevices;
+          renderDevices(devices);
+          showNotification('📊 Using Mock Data Mode (Tauri disabled)', false);
         } else {
-          const response = await window.__TAURI__.invoke('list_devices');
-          devices = response || mockDevices;
+          // Try to invoke Tauri
+          try {
+            const response = await invoke('list_devices');
+            devices = response || [];
+            renderDevices(devices);
+            showNotification('✓ Devices loaded from daemon', false);
+          } catch (invokeErr) {
+            console.error('invoke failed:', invokeErr);
+            showNotification(`✗ Daemon error: ${invokeErr.message}`, true);
+            renderDevices([]);
+          }
         }
-
-        renderDevices(devices);
-        showNotification('✓ Devices loaded successfully', false);
       } catch (err) {
-        console.error('Error loading devices:', err);
-        // Fallback to mock data
-        renderDevices(mockDevices);
-        showNotification('⚠ Using demo data (daemon not responding)', true);
+        console.error('loadDevices error:', err);
+        renderDevices([]);
+        showNotification(`✗ Error: ${err}`, true);
       }
     }
 
@@ -366,7 +360,7 @@
 
     async function approveDevice(ip) {
       try {
-        await window.__TAURI__.invoke('approve_device', { ip });
+        await invoke('approve_device', { ip });
         showNotification(`✓ Device ${ip} approved`, false);
         await loadDevices();
       } catch (err) {
@@ -376,7 +370,7 @@
 
     async function denyDevice(ip) {
       try {
-        await window.__TAURI__.invoke('deny_device', { ip });
+        await invoke('deny_device', { ip });
         showNotification(`✓ Device ${ip} denied`, false);
         await loadDevices();
       } catch (err) {
@@ -399,16 +393,24 @@
 
     // Load devices on page load
     window.addEventListener('load', () => {
-      // Check if Tauri is available
-      if (typeof window.__TAURI__ === 'undefined') {
-        console.warn('Tauri API not available, using mock data');
+      console.log('Page loaded');
+      console.log('window.__TAURI__:', typeof window.__TAURI__);
+      
+      // Check if Tauri API exists
+      if (window.__TAURI__ && (window.__TAURI__.invoke || (window.__TAURI__.core && window.__TAURI__.core.invoke))) {
+        console.log('✓ Tauri API detected - real mode');
+        useMockData = false;
+        showNotification('✓ Tauri API found - connected', false);
+      } else {
+        console.log('✗ Tauri API not detected - using mock mode');
         useMockData = true;
+        showNotification('⚠️ Tauri API not found - using Mock Data only', true);
       }
-      loadDevices();
+      
+      renderDevices([]);
     });
 
-    // Auto-refresh every 5 seconds
-    setInterval(loadDevices, 5000);
+    // Manual refresh only (user clicks button)
   </script>
 </body>
 </html>

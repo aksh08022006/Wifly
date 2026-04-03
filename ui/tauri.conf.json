@@ -15,11 +15,12 @@
         "height": 800,
         "resizable": true,
         "fullscreen": false,
-        "focus": true
+        "focus": true,
+        "devtools": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' data: ipc:"
     }
   },
   "bundle": {
