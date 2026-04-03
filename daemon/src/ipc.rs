@@ -133,7 +133,7 @@ pub async fn run_pipe_server(
 async fn handle_pipe_client(
     mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     registry: Arc<Mutex<DeviceRegistry>>,
-    shutdown: Arc<tokio::sync::Notify>,
+    _shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(), DaemonError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     

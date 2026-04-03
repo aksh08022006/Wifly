@@ -1,13 +1,12 @@
-// Main App Component - M5 Phase 5 Dashboard with Stats Display
-// ==============================================================
+// Main App Component - M5 Phase 3 Dashboard with IPC
+// ==================================================
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
-import DeviceList from '../components/DeviceList'
-import DeviceStatsDisplay from '../components/DeviceStatsDisplay'
-import Header from '../components/Header'
-import Sidebar from '../components/Sidebar'
-import '../styles/App.css'
+import DeviceList from './components/DeviceList'
+import Header from './components/Header'
+import Sidebar from './components/Sidebar'
+import './styles/App.css'
 
 interface DeviceInfo {
   ip: string
@@ -20,9 +19,9 @@ interface DeviceInfo {
 
 export default function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
-  const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Fetch devices from daemon via Tauri IPC
@@ -83,18 +82,9 @@ export default function App() {
       await invoke('deny_device', { ip })
       // Refresh device list
       await fetchDevices()
-      // Clear selection if denied device was selected
-      if (selectedDevice?.ip === ip) {
-        setSelectedDevice(null)
-      }
     } catch (err) {
       setError(`Failed to deny device: ${err}`)
     }
-  }
-
-  // Handle device selection
-  const handleSelectDevice = (device: DeviceInfo) => {
-    setSelectedDevice(device)
   }
 
   return (
@@ -112,24 +102,12 @@ export default function App() {
           {loading ? (
             <div className="loading">Loading devices...</div>
           ) : (
-            <>
-              <DeviceList 
-                devices={devices} 
-                onSelectDevice={handleSelectDevice}
-                onApprove={handleApproveDevice}
-                onDeny={handleDenyDevice}
-              />
-              
-              {/* M5 Phase 5: Show stats for selected approved device */}
-              {selectedDevice && selectedDevice.approved && (
-                <DeviceStatsDisplay 
-                  deviceIp={selectedDevice.ip}
-                  onRefresh={() => {
-                    // Optional: refresh device list when stats update
-                  }}
-                />
-              )}
-            </>
+            <DeviceList 
+              devices={devices} 
+              onSelectDevice={setSelectedDevice}
+              onApprove={handleApproveDevice}
+              onDeny={handleDenyDevice}
+            />
           )}
         </div>
       </div>
