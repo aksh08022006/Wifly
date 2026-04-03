@@ -1,7 +1,7 @@
 {
   "productName": "NetShaper",
   "version": "0.1.0",
-  "identifier": "com.netshaper.dev",
+  "identifier": "com.netshaper.app",
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
@@ -11,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "NetShaper - Device Management",
+        "title": "NetShaper - Bandwidth Manager",
         "width": 1200,
         "height": 800,
         "resizable": true,
@@ -25,6 +25,19 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": ["msi", "dmg", "appimage"],
+    "msiInstallerUrl": "https://github.com/aksh08022006/Wifly/releases/latest",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  },
+  "updater": {
+    "active": true,
+    "endpoints": [
+      "https://updates.netshaper.io/releases/{{target}}/{{current_version}}"
+    ],
+    "dialog": true,
+    "pubkey": "YOUR_PUBLIC_KEY_HERE"
   }
 }
