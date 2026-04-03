@@ -44,6 +44,7 @@ async fn fetch_devices_from_daemon() -> Result<Vec<DeviceInfo>, String> {
 async fn connect_to_daemon_windows() -> Result<Vec<DeviceInfo>, String> {
     use std::fs::File;
     use std::io::{Read, Write};
+    use proto::DaemonCommand;
     
     let pipe_name = "\\\\.\\pipe\\netshaper";
     
@@ -51,8 +52,9 @@ async fn connect_to_daemon_windows() -> Result<Vec<DeviceInfo>, String> {
     let mut pipe = File::open(pipe_name)
         .map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
-    // Send list_devices command
-    let request = bincode::serialize(&"list_devices".to_string())
+    // Send ListDevices command (proper enum variant, not string)
+    let cmd = DaemonCommand::ListDevices;
+    let request = bincode::serialize(&cmd)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     pipe.write_all(&request)
@@ -87,13 +89,15 @@ async fn connect_to_daemon_windows() -> Result<Vec<DeviceInfo>, String> {
 #[cfg(unix)]
 async fn connect_to_daemon_unix() -> Result<Vec<DeviceInfo>, String> {
     use tokio::net::UnixStream;
+    use proto::DaemonCommand;
     
     let mut stream = UnixStream::connect("/tmp/netshaper.sock")
         .await
         .map_err(|e| format!("Failed to connect to daemon: {}", e))?;
 
-    // Send list_devices command
-    let request = bincode::serialize(&"list_devices".to_string())
+    // Send ListDevices command (proper enum variant, not string)
+    let cmd = DaemonCommand::ListDevices;
+    let request = bincode::serialize(&cmd)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     stream.write_all(&request)
@@ -159,11 +163,33 @@ async fn deny_device(ip: String) -> Result<(), String> {
 async fn send_command_to_daemon_windows(command: String) -> Result<(), String> {
     use std::fs::File;
     use std::io::Write;
+    use std::net::Ipv4Addr;
+    use proto::{DaemonCommand, BandwidthUpdate};
     
     let mut pipe = File::open("\\\\.\\pipe\\netshaper")
         .map_err(|e| format!("Connection failed: {}", e))?;
 
-    let request = bincode::serialize(&command)
+    // Parse "approve:192.168.1.100" or "deny:192.168.1.100"
+    let (action, ip_str) = command.split_once(':')
+        .ok_or("Invalid command format".to_string())?;
+
+    let ip: Ipv4Addr = ip_str.parse()
+        .map_err(|_| format!("Invalid IP: {}", ip_str))?;
+
+    // Build proper DaemonCommand enum instead of sending raw string
+    let cmd = match action {
+        "approve" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: DEFAULT_BANDWIDTH_LIMIT,
+        }),
+        "deny" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: 0, // 0 = blocked
+        }),
+        _ => return Err(format!("Unknown action: {}", action)),
+    };
+
+    let request = bincode::serialize(&cmd)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     pipe.write_all(&request)
@@ -175,12 +201,35 @@ async fn send_command_to_daemon_windows(command: String) -> Result<(), String> {
 #[cfg(unix)]
 async fn send_command_to_daemon_unix(command: String) -> Result<(), String> {
     use tokio::net::UnixStream;
+    use tokio::io::AsyncWriteExt;
+    use std::net::Ipv4Addr;
+    use proto::{DaemonCommand, BandwidthUpdate};
     
     let mut stream = UnixStream::connect("/tmp/netshaper.sock")
         .await
         .map_err(|e| format!("Connection failed: {}", e))?;
 
-    let request = bincode::serialize(&command)
+    // Parse "approve:192.168.1.100" or "deny:192.168.1.100"
+    let (action, ip_str) = command.split_once(':')
+        .ok_or("Invalid command format".to_string())?;
+
+    let ip: Ipv4Addr = ip_str.parse()
+        .map_err(|_| format!("Invalid IP: {}", ip_str))?;
+
+    // Build proper DaemonCommand enum instead of sending raw string
+    let cmd = match action {
+        "approve" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: DEFAULT_BANDWIDTH_LIMIT,
+        }),
+        "deny" => DaemonCommand::UpdateBandwidth(BandwidthUpdate {
+            ip,
+            bytes_per_sec: 0, // 0 = blocked
+        }),
+        _ => return Err(format!("Unknown action: {}", action)),
+    };
+
+    let request = bincode::serialize(&cmd)
         .map_err(|e| format!("Serialization error: {}", e))?;
     
     stream.write_all(&request)
