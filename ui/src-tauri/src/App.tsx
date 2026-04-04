@@ -1,12 +1,14 @@
-// Main App Component - M5 Phase 3 Dashboard with IPC
-// ==================================================
+// Main App Component - M5 Phase 5 Dashboard with Stats Display
+// ==============================================================
 
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
-import DeviceList from './components/DeviceList'
-import Header from './components/Header'
-import Sidebar from './components/Sidebar'
-import './styles/App.css'
+import DeviceList from '../components/DeviceList'
+import DeviceStatsDisplay from '../components/DeviceStatsDisplay'
+import Header from '../components/Header'
+import Sidebar from '../components/Sidebar'
+import ServerSettings from '../components/ServerSettings'
+import '../styles/App.css'
 
 interface DeviceInfo {
   ip: string
@@ -19,10 +21,17 @@ interface DeviceInfo {
 
 export default function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([])
+  const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [showSettings, setShowSettings] = useState(false)
+  const [serverHost, setServerHost] = useState(() => {
+    return localStorage.getItem('serverHost') || 'localhost'
+  })
+  const [serverPort, setServerPort] = useState(() => {
+    return parseInt(localStorage.getItem('serverPort') || '8080')
+  })
 
   // Fetch devices from daemon via Tauri IPC
   const fetchDevices = async () => {
@@ -82,14 +91,38 @@ export default function App() {
       await invoke('deny_device', { ip })
       // Refresh device list
       await fetchDevices()
+      // Clear selection if denied device was selected
+      if (selectedDevice?.ip === ip) {
+        setSelectedDevice(null)
+      }
     } catch (err) {
       setError(`Failed to deny device: ${err}`)
     }
   }
 
+  // Handle device selection
+  const handleSelectDevice = (device: DeviceInfo) => {
+    setSelectedDevice(device)
+  }
+
+  // Handle server connection
+  const handleServerConnect = (host: string, port: number) => {
+    setServerHost(host)
+    setServerPort(port)
+    localStorage.setItem('serverHost', host)
+    localStorage.setItem('serverPort', port.toString())
+    // Show settings modal to confirm
+    setShowSettings(false)
+    // Optionally refresh devices after connecting to new server
+    fetchDevices()
+  }
+
   return (
     <div className="app-container">
-      <Header onMenuToggle={() => setSidebarOpen(!sidebarOpen)} />
+      <Header 
+        onMenuToggle={() => setSidebarOpen(!sidebarOpen)}
+        onSettingsClick={() => setShowSettings(true)}
+      />
       <div className="main-content">
         <Sidebar open={sidebarOpen} />
         <div className="content-area">
@@ -102,12 +135,62 @@ export default function App() {
           {loading ? (
             <div className="loading">Loading devices...</div>
           ) : (
-            <DeviceList 
-              devices={devices} 
-              onSelectDevice={setSelectedDevice}
-              onApprove={handleApproveDevice}
-              onDeny={handleDenyDevice}
-            />
+            <>
+              <DeviceList 
+                devices={devices} 
+                onSelectDevice={handleSelectDevice}
+                onApprove={handleApproveDevice}
+                onDeny={handleDenyDevice}
+              />
+              
+              {/* M5 Phase 5: Show stats for selected approved device */}
+              {selectedDevice && selectedDevice.approved && (
+                <DeviceStatsDisplay 
+                  deviceIp={selectedDevice.ip}
+                  onRefresh={() => {
+                    // Optional: refresh device list when stats update
+                  }}
+                />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Server Settings Modal */}
+      {showSettings && (
+        <ServerSettings
+          onClose={() => setShowSettings(false)}
+          onConnect={handleServerConnect}
+          defaultHost={serverHost}
+          defaultPort={serverPort}
+        />
+      )}
+    </div>
+  )
+}
+          )}
+          {loading ? (
+            <div className="loading">Loading devices...</div>
+          ) : (
+            <>
+              <DeviceList 
+                devices={devices} 
+                onSelectDevice={handleSelectDevice}
+                onApprove={handleApproveDevice}
+                onDeny={handleDenyDevice}
+              />
+              
+              {/* M5 Phase 5: Show stats for selected approved device */}
+              {selectedDevice && selectedDevice.approved && (
+                <DeviceStatsDisplay 
+                  deviceIp={selectedDevice.ip}
+                  onRefresh={() => {
+                    // Optional: refresh device list when stats update
+                  }}
+                />
+              )}
+            </>
           )}
         </div>
       </div>

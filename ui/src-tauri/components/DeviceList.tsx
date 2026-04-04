@@ -1,7 +1,6 @@
 // DeviceList Component - With Action Handlers
 // ============================================
 
-import React from 'react'
 import DeviceCard from './DeviceCard'
 
 interface DeviceInfo {

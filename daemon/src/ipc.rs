@@ -5,13 +5,16 @@
 use thiserror::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::io::AsyncWriteExt;
 use crate::DeviceRegistry;
-use proto::{PacketMetadata, PacketDecision};
+use proto::{PacketMetadata, PacketDecision, DaemonCommand};
 
 #[derive(Error, Debug)]
 pub enum DaemonError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }
 
 /// Handle a single packet classification request
@@ -128,31 +131,161 @@ pub async fn run_pipe_server(
 }
 
 /// Handle a single named pipe client connection
-/// Reads PacketMetadata, classifies, and sends back PacketDecision
+/// Reads commands from UI or kernel callout via named pipe
 /// Respects shutdown signal for graceful termination
 async fn handle_pipe_client(
     mut pipe: tokio::net::windows::named_pipe::NamedPipeServer,
     registry: Arc<Mutex<DeviceRegistry>>,
     _shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(), DaemonError> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
+    
+    let mut buffer = vec![0u8; 65536];
     
     loop {
-        // Read message size (little-endian u32)
-        let mut size_bytes = [0u8; 4];
-        match pipe.read_exact(&mut size_bytes).await {
-            Ok(_) => {},
+        // Read from pipe
+        match pipe.read(&mut buffer).await {
+            Ok(0) => {
+                // Client disconnected
+                tracing::debug!("Client disconnected");
+                break;
+            }
+            Ok(n) => {
+                let data = &buffer[..n];
+                
+                // Try to deserialize as string command (UI protocol)
+                match bincode::deserialize::<String>(data) {
+                    Ok(cmd) => {
+                        tracing::debug!("Received command: {}", cmd);
+                        
+                        if cmd == "list_devices" {
+                            handle_list_devices(&mut pipe, &registry).await?;
+                        } else if cmd.starts_with("approve:") {
+                            let ip_str = cmd.strip_prefix("approve:").unwrap_or("");
+                            if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                                handle_approve_device(&mut pipe, &registry, ip).await?;
+                            }
+                        } else if cmd.starts_with("deny:") {
+                            let ip_str = cmd.strip_prefix("deny:").unwrap_or("");
+                            if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                                handle_deny_device(&mut pipe, &registry, ip).await?;
+                            }
+                        } else {
+                            tracing::warn!("Unknown command: {}", cmd);
+                        }
+                    }
+                    Err(_) => {
+                        tracing::debug!("Failed to deserialize command, ignoring");
+                    }
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                // Client disconnected gracefully
                 break;
             }
             Err(e) => {
-                tracing::warn!("Failed to read message size: {}", e);
+                tracing::warn!("Error reading from pipe: {}", e);
                 return Err(DaemonError::Io(e));
             }
         }
     }
 
+    Ok(())
+}
+
+/// Handle list_devices command - returns all devices with their status
+async fn handle_list_devices(
+    pipe: &mut tokio::net::windows::named_pipe::NamedPipeServer,
+    registry: &Arc<Mutex<DeviceRegistry>>,
+) -> Result<(), DaemonError> {
+    use tokio::io::AsyncWriteExt;
+    
+    let reg = registry.lock().await;
+    let devices: Vec<(String, Option<String>, bool, String, u64, u64)> = reg
+        .list_devices()
+        .iter()
+        .map(|ip| {
+            let ip_str = ip.to_string();
+            let bandwidth = reg.get_bucket(*ip).map(|b| b.allowed_bytes_per_sec).unwrap_or(0);
+            let approved = bandwidth > 0;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| format!("2026-04-03T{:02}:{:02}:{:02}Z", d.as_secs() / 3600, (d.as_secs() % 3600) / 60, d.as_secs() % 60))
+                .unwrap_or_else(|_| "2026-04-03T00:00:00Z".to_string());
+            let current = reg.get_current_usage(*ip);
+            
+            (ip_str, None, approved, now, bandwidth, current)
+        })
+        .collect();
+    
+    let response = bincode::serialize(&devices)
+        .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
+    
+    pipe.write_all(&response).await?;
+    pipe.flush().await?;
+    tracing::debug!("Sent {} devices to client", devices.len());
+    Ok(())
+}
+
+/// Handle approve_device command
+async fn handle_approve_device(
+    pipe: &mut tokio::net::windows::named_pipe::NamedPipeServer,
+    registry: &Arc<Mutex<DeviceRegistry>>,
+    ip: std::net::IpAddr,
+) -> Result<(), DaemonError> {
+    use tokio::io::AsyncWriteExt;
+    
+    let mut reg = registry.lock().await;
+    const DEFAULT_BANDWIDTH: u64 = 10_000_000; // 10 MB/s default
+    
+    // Convert IpAddr to Ipv4Addr if possible
+    if let std::net::IpAddr::V4(ipv4) = ip {
+        if !reg.list_devices().contains(&ipv4) {
+            reg.insert_device(ipv4, DEFAULT_BANDWIDTH);
+        } else {
+            reg.update_bandwidth(ipv4, DEFAULT_BANDWIDTH);
+        }
+        
+        let response = bincode::serialize(&"OK".to_string())
+            .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
+        
+        pipe.write_all(&response).await?;
+        pipe.flush().await?;
+        tracing::info!("Device {} approved with 10 MB/s limit", ipv4);
+    } else {
+        let response = bincode::serialize(&"ERROR: IPv6 not supported".to_string())
+            .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
+        pipe.write_all(&response).await?;
+    }
+    
+    Ok(())
+}
+
+/// Handle deny_device command
+async fn handle_deny_device(
+    pipe: &mut tokio::net::windows::named_pipe::NamedPipeServer,
+    registry: &Arc<Mutex<DeviceRegistry>>,
+    ip: std::net::IpAddr,
+) -> Result<(), DaemonError> {
+    use tokio::io::AsyncWriteExt;
+    
+    let mut reg = registry.lock().await;
+    
+    // Convert IpAddr to Ipv4Addr if possible
+    if let std::net::IpAddr::V4(ipv4) = ip {
+        reg.update_bandwidth(ipv4, 0); // 0 bandwidth = blocked
+        
+        let response = bincode::serialize(&"OK".to_string())
+            .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
+        
+        pipe.write_all(&response).await?;
+        pipe.flush().await?;
+        tracing::info!("Device {} denied", ipv4);
+    } else {
+        let response = bincode::serialize(&"ERROR: IPv6 not supported".to_string())
+            .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
+        pipe.write_all(&response).await?;
+    }
+    
     Ok(())
 }
 
@@ -190,28 +323,25 @@ async fn process_command(
         }
         DaemonCommand::ListDevices => {
             let reg = registry.lock().await;
-            let states = build_device_states(&reg);
             
-            // Convert DeviceState to DeviceInfo format for UI
-            let devices: Vec<(String, Option<String>, bool, String, u64, u64)> = states
+            // Convert devices to the expected format
+            let devices: Vec<(String, Option<String>, bool, String, u64, u64)> = reg
+                .list_devices()
                 .iter()
-                .map(|state| {
-                    let ip_str = state.ip.to_string();
-                    let approved = !state.is_blocked;
-                    let now = chrono::Utc::now().to_rfc3339();
+                .map(|ip| {
+                    let ip_str = ip.to_string();
+                    // Device is approved if it has non-zero bandwidth limit
+                    let bandwidth = reg.get_bucket(*ip).map(|b| b.allowed_bytes_per_sec).unwrap_or(0);
+                    let approved = bandwidth > 0;
+                    let now = format!("{:?}", std::time::SystemTime::now());
+                    let current = reg.get_current_usage(*ip);
                     
-                    (
-                        ip_str,
-                        state.hostname.clone(),
-                        approved,
-                        now,
-                        state.bytes_per_sec,
-                        state.current_usage,
-                    )
+                    (ip_str, None, approved, now, bandwidth, current)
                 })
                 .collect();
             
-            let response = bincode::serialize(&devices)?;
+            let response = bincode::serialize(&devices)
+                .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
             pipe.write_all(&response).await?;
             Ok(())
         }
@@ -222,7 +352,7 @@ async fn process_command(
             let peak_usage = reg.get_peak_usage(ip);
             let total_consumption = reg.get_total_consumption(ip);
             
-            if let Some(bucket) = reg.get_bucket(&ip) {
+            if let Some(bucket) = reg.get_bucket(ip) {
                 let stats = proto::DeviceStats {
                     ip,
                     current_usage,
@@ -230,7 +360,8 @@ async fn process_command(
                     total_consumption,
                     bandwidth_limit: bucket.allowed_bytes_per_sec,
                 };
-                let response = bincode::serialize(&stats)?;
+                let response = bincode::serialize(&stats)
+                    .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
                 pipe.write_all(&response).await?;
             }
             Ok(())
@@ -246,7 +377,7 @@ async fn process_command(
                 let peak_usage = reg.get_peak_usage(ip);
                 let total_consumption = reg.get_total_consumption(ip);
                 
-                if let Some(bucket) = reg.get_bucket(&ip) {
+                if let Some(bucket) = reg.get_bucket(ip) {
                     all_stats.push(proto::DeviceStats {
                         ip,
                         current_usage,
@@ -257,7 +388,8 @@ async fn process_command(
                 }
             }
             
-            let response = bincode::serialize(&all_stats)?;
+            let response = bincode::serialize(&all_stats)
+                .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
             pipe.write_all(&response).await?;
             Ok(())
         }
@@ -315,7 +447,8 @@ async fn process_packet(
     };
 
     // Send decision back to kernel callout
-    let response = bincode::serialize(&decision)?;
+    let response = bincode::serialize(&decision)
+        .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
     pipe.write_all(&response).await?;
 
     Ok(())
@@ -402,7 +535,8 @@ async fn process_unix_command(
                 }
             }
             
-            let response = bincode::serialize(&all_stats)?;
+            let response = bincode::serialize(&all_stats)
+                .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
             socket.write_all(&response).await?;
             Ok(())
         }
@@ -451,13 +585,19 @@ async fn process_unix_packet(
                 packet_id: metadata.packet_id,
             }
         }
-        
-        if let Err(e) = pipe.write_all(&response).await {
-            tracing::warn!("Failed to write response: {}", e);
-            return Err(DaemonError::Io(e));
+    } else {
+        // Device not enrolled - block by default for security
+        tracing::warn!("Dropping packet from unapproved device: {}", metadata.src_ip);
+        PacketDecision::Drop {
+            packet_id: metadata.packet_id,
         }
-    }
-    
+    };
+
+    // Send decision back to kernel callout
+    let response = bincode::serialize(&decision)
+        .map_err(|e| DaemonError::SerializationError(e.to_string()))?;
+    socket.write_all(&response).await?;
+
     Ok(())
 }
 

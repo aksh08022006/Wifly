@@ -1,482 +1,325 @@
-# M5 Phase 5: Bandwidth Tracking Architecture
+# NetShaper - Proxy Router Architecture & Specification
 
-## System Overview
+**Version:** 1.0 (M6 - Proxy Router Implementation)
+**Date:** April 3, 2026
 
+---
+
+## Executive Summary
+
+NetShaper is a **Windows desktop proxy router application** that allows users to:
+- Turn their laptop into an HTTP/HTTPS proxy server
+- Connect mobile devices and other computers via QR code pairing
+- Monitor and control bandwidth for each connected device
+- Apply traffic shaping rules in real-time
+
+**Not a web application.** Standalone Windows desktop application (like RStudio, Wireshark).
+
+---
+
+## Core Architecture
+
+### 1. Proxy Server Component
+**Role:** HTTP/HTTPS proxy that intercepts and manages network traffic
+
+**Startup Flow:**
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Windows OS                               │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │         Windows Filtering Platform (WFP)               │ │
-│  │     [Kernel-level packet interception]                 │ │
-│  └────────────────────┬─────────────────────────────────┘ │
-│                       │                                    │
-│                       ↓ PacketMetadata                     │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │      IPC Server (Named Pipe)                           │ │
-│  │  \\.\pipe\netshaper                                     │ │
-│  │  [Receives packets from kernel]                        │ │
-│  └────────────┬──────────────────┬───────────────────────┘ │
-│               │                  │                        │
-│          (daemon)           (UI dashboard)                │
-│               │                  │                        │
-│  ┌────────────▼──────────────────────────────────────────┐ │
-│  │     Daemon Process (daemon/src/main.rs)               │ │
-│  │                                                        │ │
-│  │  ┌──────────────────────────────────────────────────┐ │ │
-│  │  │  Device Registry (device_registry.rs)            │ │ │
-│  │  │  ┌────────────────────────────────────────────┐  │ │ │
-│  │  │  │ Device: 192.168.1.100                      │  │ │ │
-│  │  │  │ └─ Bucket: DeviceBucket {                 │  │ │ │
-│  │  │  │    - allowed_bytes_per_sec: 10_000_000   │  │ │ │
-│  │  │  │    - max_burst_bytes: 20_000_000          │  │ │ │
-│  │  │  │    - current_tokens: f64                  │  │ │ │
-│  │  │  │    - total_bytes_consumed: u64    ✓       │  │ │ │
-│  │  │  │    - current_window_bytes: u64    ✓       │  │ │ │
-│  │  │  │    - window_start: Instant        ✓       │  │ │ │
-│  │  │  │    - peak_usage: u64              ✓       │  │ │ │
-│  │  │  │   }                                        │  │ │ │
-│  │  │  │ ┌────────────────────────────────────────┐ │  │ │ │
-│  │  │  │ │ Device: 192.168.1.101                 │ │  │ │ │
-│  │  │  │ │ └─ Bucket: { ... }                    │ │  │ │ │
-│  │  │  │ └────────────────────────────────────────┘ │  │ │ │
-│  │  │  └────────────────────────────────────────────┘  │ │ │
-│  │  │                                                  │ │ │
-│  │  │  ┌──────────────────────────────────────────┐  │ │ │
-│  │  │  │  Packet Processor (bucket.rs)           │  │ │ │
-│  │  │  │                                          │  │ │ │
-│  │  │  │  try_consume(bytes: u32) {              │  │ │ │
-│  │  │  │    refill()                             │  │ │ │
-│  │  │  │    if tokens >= bytes {                 │  │ │ │
-│  │  │  │      tokens -= bytes                    │  │ │ │
-│  │  │  │      record_consumption(bytes)  ✓       │  │ │ │
-│  │  │  │      return true (PERMIT)               │  │ │ │
-│  │  │  │    } else {                             │  │ │ │
-│  │  │  │      queue_packet()                     │  │ │ │
-│  │  │  │      return false (DROP/DEFER)          │  │ │ │
-│  │  │  │    }                                    │  │ │ │
-│  │  │  │  }                                      │  │ │ │
-│  │  │  │                                          │  │ │ │
-│  │  │  │  record_consumption(bytes: u32) {      │  │ │ │
-│  │  │  │    total_bytes_consumed += bytes       │  │ │ │
-│  │  │  │    if window_expired {                 │  │ │ │
-│  │  │  │      peak_usage = max(peak, window)    │  │ │ │
-│  │  │  │      current_window_bytes = bytes      │  │ │ │
-│  │  │  │      window_start = now()              │  │ │ │
-│  │  │  │    } else {                            │  │ │ │
-│  │  │  │      current_window_bytes += bytes     │  │ │ │
-│  │  │  │    }                                   │  │ │ │
-│  │  │  │  }                                      │  │ │ │
-│  │  │  │                                          │  │ │ │
-│  │  │  │  Getters:                               │  │ │ │
-│  │  │  │  - get_current_usage() → u64           │  │ │ │
-│  │  │  │  - get_peak_usage() → u64              │  │ │ │
-│  │  │  │  - get_total_consumption() → u64       │  │ │ │
-│  │  │  │                                          │  │ │ │
-│  │  │  └──────────────────────────────────────────┘  │ │ │
-│  │  │                                                  │ │ │
-│  │  │  ┌──────────────────────────────────────────┐  │ │ │
-│  │  │  │  IPC Handler (ipc.rs)                   │  │ │ │
-│  │  │  │                                          │  │ │ │
-│  │  │  │  Commands:                              │  │ │ │
-│  │  │  │  • UpdateBandwidth(ip, bytes/sec)      │  │ │ │
-│  │  │  │  • ListDevices                         │  │ │ │
-│  │  │  │  • GetDeviceStats(ip) → DeviceStats ✓  │  │ │ │
-│  │  │  │  • GetAllDeviceStats → Vec<Stats> ✓    │  │ │ │
-│  │  │  │  • Shutdown                            │  │ │ │
-│  │  │  │                                          │  │ │ │
-│  │  │  │  GetDeviceStats response:              │  │ │ │
-│  │  │  │  DeviceStats {                         │  │ │ │
-│  │  │  │    ip: Ipv4Addr,                       │  │ │ │
-│  │  │  │    current_usage: u64,    ✓            │  │ │ │
-│  │  │  │    peak_usage: u64,       ✓            │  │ │ │
-│  │  │  │    total_consumption: u64, ✓           │  │ │ │
-│  │  │  │    bandwidth_limit: u64                │  │ │ │
-│  │  │  │  }                                      │  │ │ │
-│  │  │  └──────────────────────────────────────────┘  │ │ │
-│  │  └──────────────────────────────────────────────────┘  │ │
-│  └──────────────────────────┬──────────────────────────────┘ │
-│                             │                               │
-│                             ↓ DeviceStats (serialized)       │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │     UI Process (ui/src/main.rs)                        │ │
-│  │                                                        │ │
-│  │  ┌──────────────────────────────────────────────────┐ │ │
-│  │  │  Tauri Commands                                 │ │ │
-│  │  │  • get_device_stats(ip) {                      │ │ │
-│  │  │    Connect to \\.\pipe\netshaper              │ │ │
-│  │  │    Send: DaemonCommand::GetDeviceStats(ip)   │ │ │
-│  │  │    Receive: DeviceStats struct               │ │ │
-│  │  │    Return: (current, peak, total) tuple ✓     │ │ │
-│  │  │  }                                             │ │ │
-│  │  │                                                 │ │ │
-│  │  │  • get_all_device_stats() {                   │ │ │
-│  │  │    Connect to \\.\pipe\netshaper              │ │ │
-│  │  │    Send: DaemonCommand::GetAllDeviceStats    │ │ │
-│  │  │    Receive: Vec<DeviceStats>                 │ │ │
-│  │  │    Return: Vec of tuples with all fields ✓   │ │ │
-│  │  │  }                                             │ │ │
-│  │  │                                                 │ │ │
-│  │  │  • list_devices() → Vec<DeviceInfo>           │ │ │
-│  │  │  • approve_device(ip, limit)                  │ │ │
-│  │  │  • deny_device(ip)                            │ │ │
-│  │  └──────────────────────────────────────────────────┘  │ │
-│  │                                                        │ │
-│  └────────────────────────┬─────────────────────────────┘ │ │
-│                           │                               │ │
-└───────────────────────────┼──────────────────────────────┘ │
-                            │
-                            ↓ JSON / invoke
-         ┌──────────────────────────────────────┐
-         │   Browser / React Frontend           │
-         │                                      │
-         │  ┌────────────────────────────────┐ │
-         │  │ DeviceStatsDisplay Component   │ │
-         │  │ (src-tauri/components/.tsx)    │ │
-         │  │                                │ │
-         │  │ State: {                       │ │
-         │  │   stats: DeviceStats | null   │ │
-         │  │   loading: bool                │ │
-         │  │   autoRefresh: bool (1Hz) ✓   │ │
-         │  │ }                              │ │
-         │  │                                │ │
-         │  │ useEffect(() => {             │ │
-         │  │   interval every 1s {         │ │
-         │  │     invoke('get_device_stats')│ │
-         │  │     .then(setStats)           │ │
-         │  │   }                           │ │
-         │  │ }, [autoRefresh]) ✓           │ │
-         │  │                                │ │
-         │  │ Display:                      │ │
-         │  │ - Current Usage: formatBytes  │ │
-         │  │ - Peak Usage: formatBytes     │ │
-         │  │ - Total Consumption: bytes    │ │
-         │  │ - Bandwidth Limit: bytes/sec  │ │
-         │  │                                │ │
-         │  │ Updates: every ~1000ms ✓      │ │
-         │  └────────────────────────────────┘ │
-         │                                      │
-         └──────────────────────────────────────┘
+User opens NetShaper
+    ↓
+App loads system WiFi settings (speed, bandwidth)
+    ↓
+User clicks "Start Proxy" button
+    ↓
+Proxy server starts on localhost:8080
+    ↓
+Generate QR code containing:
+    - Device IP address (192.168.x.x)
+    - Proxy port (8080)
+    - Unique pairing token
+    - Device name (e.g., "Saksham-Laptop")
+    ↓
+Waiting for devices to scan and connect
 ```
 
 ---
 
-## Data Flow: Packet Processing
+### 2. Device Pairing System
+**Role:** Connect remote devices (phones, laptops) to proxy with authentication
 
+**QR Code Contains:**
+```json
+{
+  "server": "192.168.x.x:8080",
+  "token": "ABC123XYZ789",
+  "device_name": "Saksham-Laptop",
+  "version": "1.0"
+}
 ```
-1. Network Packet Arrives
-   └─ WFP intercepts it
-   
-2. PacketMetadata sent to Daemon via IPC
-   PacketMetadata {
-     src_ip: Ipv4Addr,
-     dst_ip: Ipv4Addr,
-     byte_len: u32,  ← Used for stats
-     packet_id: u64
-   }
-   
-3. Daemon receives via IPC
-   └─ parse PacketMetadata
-   
-4. Lookup device in registry
-   registry.get_bucket_mut(dst_ip)
-   └─ Found: DeviceBucket
-   
-5. Token bucket tries_consume(byte_len)
-   ├─ Refill tokens based on elapsed time
-   ├─ Check if bytes_f64 <= current_tokens
-   ├─ If YES:
-   │  ├─ current_tokens -= bytes_f64
-   │  ├─ record_consumption(bytes) ← STATS UPDATE
-   │  └─ return true (PERMIT)
-   └─ If NO:
-      ├─ queue_packet for retry
-      └─ return false (DROP)
-      
-6. record_consumption() called
-   ├─ total_bytes_consumed += bytes
-   ├─ Check if 1-second window expired
-   ├─ If expired:
-   │  ├─ if current_window_bytes > peak_usage:
-   │  │  └─ peak_usage = current_window_bytes
-   │  ├─ current_window_bytes = bytes
-   │  └─ window_start = now()
-   └─ If not expired:
-      └─ current_window_bytes += bytes
-      
-7. Send PacketDecision back to kernel
-   PacketDecision::Permit { packet_id }
-   or
-   PacketDecision::Drop { packet_id }
+
+**Pairing Flow:**
+```
+Phone scans QR code
+    ↓
+Phone connects to proxy on 192.168.x.x:8080
+    ↓
+Daemon receives connection, shows pairing request on laptop
+    ↓
+Pairing notification appears in left panel:
+    "NewDevice (192.168.1.101) requesting access"
+    [Accept]  [Reject]
+    ↓
+User clicks Accept
+    ↓
+Device added to Connected Devices list
+    ↓
+All phone traffic now routed through laptop proxy
 ```
 
 ---
 
-## Data Flow: Stats Retrieval
+### 3. Bandwidth Management (Main Playground)
+**Default Settings (from WiFi Provider):**
+- Auto-read current WiFi speed from Windows
+- Display as starting point
+- User can modify globally or per-device
 
+**Per-Device Controls:**
 ```
-1. UI calls invoke('get_device_stats', { ip })
-   
-2. Tauri backend receives command
-   └─ Connect to \\.\pipe\netshaper
-   
-3. Serialize and send DaemonCommand
-   DaemonCommand::GetDeviceStats(Ipv4Addr)
-   
-4. Daemon receives command
-   ├─ Lock registry
-   ├─ Lookup device by IP
-   ├─ Extract current metrics:
-   │  ├─ current_usage = bucket.get_current_usage()
-   │  ├─ peak_usage = bucket.get_peak_usage()
-   │  ├─ total_consumption = bucket.get_total_consumption()
-   │  └─ bandwidth_limit = bucket.allowed_bytes_per_sec
-   └─ Create DeviceStats struct
-   
-5. Daemon serializes and sends response
-   bincode::serialize(&DeviceStats)
-   
-6. Tauri backend deserializes
-   proto::DeviceStats {
-     ip: Ipv4Addr,
-     current_usage: u64,
-     peak_usage: u64,
-     total_consumption: u64,
-     bandwidth_limit: u64
-   }
-   
-7. Convert to tuple for React
-   (current_usage, peak_usage, total_consumption)
-   
-8. React component receives via Promise
-   └─ setStats({ ip, current_usage, peak_usage, ... })
-   
-9. Display updates
-   ├─ Current: formatBytes(current_usage)
-   ├─ Peak: formatBytes(peak_usage)
-   └─ Total: formatBytes(total_consumption)
-   
-10. Auto-refresh every 1 second (useEffect)
-    └─ Back to step 1
+Connected Device: iPhone-12
+├─ Current Usage: 2.3 Mbps (real-time)
+├─ Bandwidth Limit: [5 Mbps] ← User can edit
+├─ Priority: [Medium] ← Auto/High/Medium/Low
+├─ Downloaded: 456 MB (total)
+├─ Uploaded: 123 MB (total)
+└─ Actions: [Throttle] [Pause] [Block] [Disconnect]
 ```
 
 ---
 
-## Key Implementation Details
+## UI Design (RStudio-like: 3-Panel Layout)
 
-### Token Bucket with Stats
+### Left Panel: Device Management
+```
+╔═════════════════════════════════╗
+║  NetShaper - Proxy Router       ║
+╠═════════════════════════════════╣
+║  [▶ Start Proxy] [⚙ Settings]  ║
+╠═════════════════════════════════╣
+║  Connected Devices (2)          ║
+╟─────────────────────────────────╢
+║  ✓ iPhone-12                    ║
+║    192.168.1.101 • 2 mins       ║
+║  ✓ MacBook-Pro                  ║
+║    192.168.1.102 • 15 mins      ║
+╟─────────────────────────────────╢
+║  Pairing Requests (1)           ║
+╟─────────────────────────────────╢
+║  ⏳ NewPhone (192.168.1.103)    ║
+║     [Accept]  [Reject]          ║
+╟─────────────────────────────────╢
+║  [📱 Scan QR to Add Device]     ║
+╚═════════════════════════════════╝
+```
 
-**File:** `daemon/src/bucket.rs`
+### Center Panel: Real-time Monitoring
+```
+╔════════════════════════════════════════════════════════╗
+║     NETWORK MONITOR                                    ║
+╠════════════════════════════════════════════════════════╣
+║                                                        ║
+║  Total Bandwidth Usage:                              ║
+║  ████████░░░░░░░░░ 8.5 / 20 Mbps                    ║
+║                                                        ║
+║  ┌─────────────────────────────────────┐             ║
+║  │  Traffic Graph (Last 5 minutes)      │             ║
+║  │  10│          ╱╲                     │             ║
+║  │   8│    ╱╲╱╲╱  ╲╱╲╱                 │             ║
+║  │   6│╱╲╱╱  ╲╱╲╱╱                   │             ║
+║  │   4│                                │             ║
+║  │   2│                                │             ║
+║  │   0└─────────────────→ Time         │             ║
+║  └─────────────────────────────────────┘             ║
+║                                                        ║
+║  Top 3 Connections:                                  ║
+║  1. iPhone-12:    5.2 Mbps  (YouTube)               ║
+║  2. MacBook-Pro:  2.8 Mbps  (Zoom)                  ║
+║  3. iPhone-12:    1.0 Mbps  (Spotify)               ║
+║                                                        ║
+║  Total Down: 456 MB | Total Up: 123 MB              ║
+╚════════════════════════════════════════════════════════╝
+```
 
+### Right Panel: Device Control & Settings
+```
+╔═════════════════════════════════╗
+║  Device: iPhone-12              ║
+╠═════════════════════════════════╣
+║                                 ║
+║  Status: ✓ Connected            ║
+║  IP Address: 192.168.1.101      ║
+║  MAC Address: AA:BB:CC:DD       ║
+║  Connected: 2 minutes ago       ║
+║  OS: iOS 17.4                   ║
+║                                 ║
+╠═════════════════════════════════╣
+║  BANDWIDTH CONTROL              ║
+╟─────────────────────────────────╢
+║                                 ║
+║  Bandwidth Limit:               ║
+║  ┌──────────────────────┐       ║
+║  │ [5 Mbps        ▼]    │       ║
+║  │ ████░░░░░░░░░░░░ 5   │       ║
+║  └──────────────────────┘       ║
+║  [ 1 ] [ 2 ] [ 5 ] [ 10 ] [∞]  ║
+║                                 ║
+║  Priority Level:                ║
+║  ◯ High    ◉ Medium   ◯ Low     ║
+║                                 ║
+║  QoS Policy:                    ║
+║  [Standard ▼]                   ║
+║                                 ║
+╠═════════════════════════════════╣
+║  QUICK ACTIONS                  ║
+╟─────────────────────────────────╢
+║  [Throttle] [Pause]             ║
+║  [Block All] [Disconnect]       ║
+║  [Schedule Rule] [Alerts]       ║
+╚═════════════════════════════════╝
+```
+
+---
+
+## Technical Implementation Details
+
+### Proxy Server
 ```rust
-pub struct DeviceBucket {
-    // Existing token bucket fields
-    pub allowed_bytes_per_sec: u64,
-    pub max_burst_bytes: u64,
-    pub current_tokens: f64,
-    pub last_refill: Instant,
-    pub queue: SegQueue<DeferredPacket>,
-    
-    // M5 Phase 5: Stats tracking
-    pub total_bytes_consumed: u64,      // All-time
-    pub current_window_bytes: u64,      // Current 1-second window
-    pub window_start: Instant,          // When window started
-    pub peak_usage: u64,                // Highest rate
-}
+// Listen on localhost:8080
+// Implement HTTP/1.1 with CONNECT tunneling for HTTPS
+// Per-device traffic accounting
+// Token-based rate limiting (from M5)
 
-impl DeviceBucket {
-    pub fn try_consume(&mut self, bytes: u32) -> bool {
-        self.refill();
-        if self.current_tokens >= bytes_f64 {
-            self.current_tokens -= bytes_f64;
-            self.record_consumption(bytes);  // ← STATS
-            true
-        } else {
-            false
-        }
-    }
-    
-    fn record_consumption(&mut self, bytes: u32) {
-        self.total_bytes_consumed += bytes as u64;
-        
-        if self.window_start.elapsed().as_secs_f64() >= 1.0 {
-            if self.current_window_bytes > self.peak_usage {
-                self.peak_usage = self.current_window_bytes;
-            }
-            self.current_window_bytes = bytes as u64;
-            self.window_start = Instant::now();
-        } else {
-            self.current_window_bytes += bytes as u64;
-        }
-    }
-}
+Port: 8080 (configurable)
+Protocol: HTTP/1.1 + HTTPS tunneling
 ```
 
-### IPC Protocol
-
-**File:** `proto/src/lib.rs`
-
+### QR Code Generation
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceStats {
-    pub ip: Ipv4Addr,
-    pub current_usage: u64,      // Bytes in active 1s window
-    pub peak_usage: u64,         // Highest byte rate
-    pub total_consumption: u64,  // All-time bytes
-    pub bandwidth_limit: u64,    // Configured bytes/sec
-}
+// Generate QR code with pairing data
+// Display in UI
+// Expire tokens after 5 minutes
+// New QR on each "Start Proxy" click
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DaemonCommand {
-    UpdateBandwidth(BandwidthUpdate),
-    ListDevices,
-    GetDeviceStats(Ipv4Addr),    // NEW: Get stats for one
-    GetAllDeviceStats,            // NEW: Get all stats
-    Shutdown,
-}
+use qrcode::QrCode;
 ```
 
-### IPC Handler
-
-**File:** `daemon/src/ipc.rs`
-
+### Device Pairing
 ```rust
-fn process_command(cmd: DaemonCommand, ...) {
-    match cmd {
-        DaemonCommand::GetDeviceStats(ip) => {
-            let reg = registry.lock().await;
-            let stats = proto::DeviceStats {
-                ip,
-                current_usage: reg.get_current_usage(ip),
-                peak_usage: reg.get_peak_usage(ip),
-                total_consumption: reg.get_total_consumption(ip),
-                bandwidth_limit: reg.get_bucket(ip).map(|b| b.allowed_bytes_per_sec).unwrap_or(0),
-            };
-            pipe.write_all(&bincode::serialize(&stats)?).await?;
-        },
-        DaemonCommand::GetAllDeviceStats => {
-            let reg = registry.lock().await;
-            let all_stats: Vec<proto::DeviceStats> = reg.list_devices()
-                .iter()
-                .map(|ip| proto::DeviceStats { ... })
-                .collect();
-            pipe.write_all(&bincode::serialize(&all_stats)?).await?;
-        },
-        // ... other commands
-    }
-}
+// Device connects to proxy with token
+// IPC notification to UI
+// User accepts/rejects
+// Approved devices added to whitelist
 ```
 
-### Tauri Backend
-
-**File:** `ui/src/main.rs`
-
+### Bandwidth Control
 ```rust
-#[tauri::command]
-async fn get_device_stats(ip: String) -> Result<(u64, u64, u64), String> {
-    let parsed_ip: Ipv4Addr = ip.parse()?;
-    
-    let mut pipe = ClientOptions::new()
-        .open("\\\\.\\pipe\\netshaper")
-        .await?;
-    
-    let cmd = DaemonCommand::GetDeviceStats(parsed_ip);
-    pipe.write_all(&bincode::serialize(&cmd)?).await?;
-    
-    let mut buffer = vec![0; 1024];
-    let n = pipe.read(&mut buffer).await?;
-    
-    let stats: proto::DeviceStats = bincode::deserialize(&buffer[..n])?;
-    Ok((stats.current_usage, stats.peak_usage, stats.total_consumption))
-}
-```
-
-### React Component
-
-**File:** `ui/src-tauri/components/DeviceStatsDisplay.tsx`
-
-```typescript
-useEffect(() => {
-    const interval = setInterval(async () => {
-        try {
-            const response = await invoke<[number, number, number]>(
-                'get_device_stats', 
-                { ip: deviceIp }
-            );
-            
-            setStats({
-                ip: deviceIp,
-                current_usage: response[0],
-                peak_usage: response[1],
-                total_consumption: response[2],
-                bandwidth_limit: 0
-            });
-        } catch (err) {
-            setError(`Failed: ${err}`);
-        }
-    }, 1000);  // ← 1 second refresh
-    
-    return () => clearInterval(interval);
-}, [autoRefresh, deviceIp]);
+// Read WiFi speed from Windows API
+// Display as default limit
+// Per-device token bucket (use existing M5 logic)
+// Apply per connection
 ```
 
 ---
 
-## Testing Metrics
+## Implementation Phases
 
-| Metric | Range | Notes |
-|--------|-------|-------|
-| Current Usage | 0 - limit bytes/s | Resets every 1s |
-| Peak Usage | 0 - ∞ | Never decreases |
-| Total Consumption | 0 - ∞ | Accumulates over time |
-| Measurement Error | ±2-5% | Due to 1s windowing |
-| Update Latency | <200ms | IPC + deserialization |
-| Memory per device | ~500 bytes | DeviceBucket overhead |
+### Phase M6: Proxy Router Core (Current)
+- [ ] HTTP proxy server on localhost:8080
+- [ ] QR code generation & display
+- [ ] Device pairing flow (connect/accept/reject)
+- [ ] Basic device list in UI
+- [ ] Manual "Start Proxy" / "Stop Proxy" buttons
+
+### Phase M7: Traffic Control
+- [ ] Bandwidth limiting per device
+- [ ] Real-time traffic monitoring
+- [ ] Graphs and statistics
+- [ ] Save/restore proxy settings
+
+### Phase M8: Advanced Features
+- [ ] Application-level traffic detection
+- [ ] Scheduling rules
+- [ ] Alert system
+- [ ] Traffic history logs
+
+### Phase M9: Polish
+- [ ] Windows Firewall integration
+- [ ] System tray icon
+- [ ] Keyboard shortcuts
+- [ ] Export reports
 
 ---
 
-## Concurrency & Safety
+## No Pre-loaded Examples
+
+**Key Requirement:** Zero example devices shown at startup.
 
 ```
-Thread Model:
-- Daemon: async/await with tokio
-- Mutex<DeviceRegistry>: Protects device map
-- SegQueue: Lock-free packet queue
-- No sync issues: Each device independent
+✗ DO NOT SHOW:
+  - Hardcoded mock devices
+  - Demo data
+  - Pre-connected devices
 
-Packet Processing:
-- Concurrent: Multiple packets processed in parallel
-- Safe: Atomics on counters, checked arithmetic
-- Efficient: Minimal lock contention
-```
-
----
-
-## Performance Characteristics
-
-```
-Token Bucket Algorithm:
-- O(1) per packet
-- ~1μs per try_consume()
-- Scales to 1M+ packets/sec
-
-Stats Tracking:
-- O(1) per record_consumption()
-- 1-second window: Low overhead
-- No locking on stats update (single-threaded)
-
-IPC Overhead:
-- Named Pipe: ~1-5ms per roundtrip
-- Serialization: <1ms for DeviceStats
-- UI refresh: 1 second interval (acceptable)
+✓ SHOW INSTEAD:
+  - Empty device list
+  - "No devices connected" message
+  - [Scan QR to Connect] button
+  - Information about how to start
 ```
 
 ---
 
-This architecture ensures:
-✅ Real-time bandwidth tracking
-✅ Zero-copy stats retrieval
-✅ Minimal performance impact
-✅ Thread-safe operations
-✅ Windows-native IPC
-✅ Live dashboard updates
+## Default WiFi Settings Logic
+
+```
+At Startup:
+1. Read current WiFi SSID and speed
+2. Check ISP-provided bandwidth limit
+3. Store as baseline
+
+When Device Connects:
+- Set initial limit to ISP baseline
+- Show in UI: "20 Mbps (WiFi Default)"
+- User can increase/decrease per device
+
+When Setting Bandwidth:
+- Global cap prevents exceeding WiFi speed
+- Per-device cap can be lower
+- Priority system for fair distribution
+```
+
+---
+
+## Test Checklist
+
+- [ ] Start Proxy button works
+- [ ] QR code displays correctly
+- [ ] Phone scans QR and connects
+- [ ] Pairing request appears in UI
+- [ ] Accept/Reject buttons work
+- [ ] Device list updates
+- [ ] Bandwidth slider works
+- [ ] Real-time traffic shows
+- [ ] No example devices on startup
+
+---
+
+## Success Criteria for M6
+
+By end of M6:
+- ✓ Proxy server functional (port 8080)
+- ✓ QR code generation & pairing
+- ✓ Device list (connected + pending)
+- ✓ Manual start/stop proxy
+- ✓ RStudio-like 3-panel UI
+- ✓ Zero pre-loaded examples
+- ✓ Default WiFi settings applied
