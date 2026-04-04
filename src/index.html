@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetShaper - Device Management</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+      color: #f1f5f9;
+      font-weight: 600;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: #94a3b8;
+      margin-bottom: 24px;
+    }
+
+    h2 {
+      font-size: 18px;
+      margin: 20px 0 15px 0;
+      color: #cbd5e1;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: #3b82f6;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #2563eb;
+    }
+
+    .btn-success {
+      background: #10b981;
+      color: white;
+    }
+
+    .btn-success:hover {
+      background: #059669;
+    }
+
+    .btn-danger {
+      background: #ef4444;
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background: #dc2626;
+    }
+
+    .btn-secondary {
+      background: #475569;
+      color: white;
+    }
+
+    .btn-secondary:hover {
+      background: #334155;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+
+    .modal-content {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 30px;
+      max-width: 500px;
+      width: 90%;
+      box-shadow: 0 20px 25px rgba(0, 0, 0, 0.5);
+      border: 1px solid #334155;
+    }
+
+    .qr-container {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      background: #0f172a;
+      border-radius: 8px;
+      margin: 20px 0;
+      min-height: 320px;
+    }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      transition: all 0.2s;
+    }
+
+    .card:hover {
+      border-color: #475569;
+      background: #234155;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #334155;
+    }
+
+    .card-header strong {
+      font-size: 16px;
+      color: #f1f5f9;
+    }
+
+    .status-badge {
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .status-approved {
+      background: #10b98180;
+      color: #d1fae5;
+    }
+
+    .status-pending {
+      background: #f59e0b80;
+      color: #fef3c7;
+    }
+
+    .device-stats {
+      margin: 12px 0;
+      font-size: 13px;
+      color: #cbd5e1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .bandwidth-control {
+      margin: 16px 0;
+      padding: 12px;
+      background: #0f172a;
+      border-radius: 6px;
+    }
+
+    .slider-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    .slider {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: #334155;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #3b82f6;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .slider::-webkit-slider-thumb:hover {
+      background: #2563eb;
+      transform: scale(1.1);
+    }
+
+    .slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #3b82f6;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+
+    .slider::-moz-range-thumb:hover {
+      background: #2563eb;
+      transform: scale(1.1);
+    }
+
+    .preset-buttons {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
+    .preset-btn {
+      padding: 6px 12px;
+      background: #334155;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+
+    .preset-btn:hover {
+      background: #475569;
+      border-color: #64748b;
+    }
+
+    .card-buttons {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .card-buttons .btn {
+      flex: 1;
+      min-width: 100px;
+      padding: 8px 12px;
+      font-size: 13px;
+    }
+
+    .notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 12px 16px;
+      border-radius: 6px;
+      z-index: 10000;
+      max-width: 300px;
+      animation: slideIn 0.3s ease;
+      border-left: 4px solid #3b82f6;
+    }
+
+    .notification.success {
+      border-left-color: #10b981;
+    }
+
+    .notification.error {
+      border-left-color: #ef4444;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateX(100px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: 16px;
+    }
+
+    .approval-popup {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 24px;
+      border: 2px solid #3b82f6;
+      max-width: 400px;
+      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
+    }
+
+    .approval-popup h2 {
+      margin-top: 0;
+      color: #f1f5f9;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .approval-buttons {
+      display: flex;
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .approval-buttons .btn {
+      flex: 1;
+    }
+
+    .loading {
+      text-align: center;
+      color: #94a3b8;
+      padding: 20px;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid #334155;
+      border-top-color: #3b82f6;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #64748b;
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📱 NetShaper Device Management</h1>
+    <p class="subtitle">Control bandwidth for devices on your WiFi network</p>
+    
+    <div class="button-group">
+      <button class="btn btn-primary" id="btn-qr">📸 Show QR Code</button>
+      <button class="btn btn-secondary" id="btn-load-devices">🔄 Refresh Devices</button>
+    </div>
+
+    <h2>Connected Devices</h2>
+    <div id="device-list" class="grid">
+      <div class="loading">
+        <span class="spinner"></span>
+        <p style="margin-top: 12px;">Loading devices...</p>
+      </div>
+    </div>
+
+    <!-- QR Code Modal -->
+    <div id="qr-modal" class="modal">
+      <div class="modal-content">
+        <h3 style="margin-top: 0; display: flex; justify-content: space-between; align-items: center;">
+          <span>📱 Pair New Device</span>
+          <button id="btn-qr-close" style="background: none; border: none; color: #94a3b8; font-size: 24px; cursor: pointer; padding: 0;">×</button>
+        </h3>
+        
+        <div class="qr-container">
+          <div id="qr-content" style="color: #94a3b8; text-align: center;">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <p>Loading QR code...</p>
+          </div>
+        </div>
+
+        <div style="font-size: 13px; color: #94a3b8; line-height: 1.6; background: #0f172a; padding: 12px; border-radius: 6px;">
+          <p><strong>Steps:</strong></p>
+          <ol style="margin-left: 20px; margin-top: 8px;">
+            <li>Open camera on your phone</li>
+            <li>Scan this QR code</li>
+            <li>Accept the browser prompt</li>
+            <li>Device will appear in the list</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Approval Popup (shown when new device pairs) -->
+    <div id="approval-popup-container"></div>
+  </div>
+
+  <script>
+    const DAEMON_URL = 'http://127.0.0.1:8080';
+    let tauriReady = false;
+    let pendingApprovals = {};
+    let eventSource = null;
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', async () => {
+      await waitForTauri();
+      setupEventListeners();
+      loadDevices();
+      connectToEventStream();
+    });
+
+    // Wait for Tauri API
+    async function waitForTauri() {
+      let attempts = 0;
+      const maxAttempts = 50;
+
+      return new Promise((resolve, reject) => {
+        const check = () => {
+          attempts++;
+
+          if (window.__TAURI__) {
+            console.log('[Tauri] API ready');
+            tauriReady = true;
+            resolve();
+            return;
+          }
+
+          if (attempts >= maxAttempts) {
+            reject(new Error('Tauri API not loaded'));
+            return;
+          }
+
+          setTimeout(check, 100);
+        };
+
+        check();
+      });
+    }
+
+    // Tauri invoke helper
+    async function invoke(command, args = {}) {
+      if (!tauriReady) throw new Error('Tauri not ready');
+      return window.__TAURI__.core.invoke(command, args);
+    }
+
+    // Setup button event listeners
+    function setupEventListeners() {
+      document.getElementById('btn-qr').addEventListener('click', showQrCode);
+      document.getElementById('btn-load-devices').addEventListener('click', loadDevices);
+      document.getElementById('btn-qr-close').addEventListener('click', closeQrModal);
+
+      document.getElementById('qr-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'qr-modal') closeQrModal();
+      });
+    }
+
+    // Show notification
+    function notify(message, type = 'info') {
+      const notif = document.createElement('div');
+      notif.className = `notification ${type}`;
+      notif.textContent = message;
+      document.body.appendChild(notif);
+      setTimeout(() => notif.remove(), 4000);
+    }
+
+    // Load devices
+    async function loadDevices() {
+      try {
+        const devices = await invoke('http_get_devices');
+        renderDevices(devices);
+        notify('✓ Devices loaded', 'success');
+      } catch (err) {
+        console.error('Load devices error:', err);
+        const errorMsg = typeof err === 'string' ? err : err.message || err;
+        renderError(errorMsg);
+        notify(`⚠️ ${errorMsg}`, 'error');
+      }
+    }
+
+    // Render device list
+    function renderDevices(devices) {
+      const list = document.getElementById('device-list');
+
+      if (!devices || devices.length === 0) {
+        list.innerHTML = `
+          <div style="grid-column: 1/-1; text-align: center; padding: 40px 20px;">
+            <div class="empty-state">
+              <div class="empty-state-icon">📱</div>
+              <p>No devices connected yet</p>
+              <p style="font-size: 13px; margin-top: 8px;">Click "Show QR Code" to pair a device</p>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      list.innerHTML = devices.map(device => {
+        const mbLimit = (device.bandwidth_limit / 1_000_000).toFixed(1);
+        const currentMb = (device.bandwidth_limit / 1_000_000).toFixed(1);
+
+        return `
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <strong>${device.device_name || device.ip}</strong>
+                <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">
+                  ${device.ip} • ${device.platform}
+                </div>
+              </div>
+              <span class="status-badge ${device.approved ? 'status-approved' : 'status-pending'}">
+                ${device.approved ? '✓ Approved' : '◯ Pending'}
+              </span>
+            </div>
+
+            <div class="device-stats">
+              <div class="stat-item">
+                <span>⚡ Limit:</span>
+                <span>${mbLimit} MB/s</span>
+              </div>
+              <div class="stat-item">
+                <span>📊 Usage:</span>
+                <span>${currentMb} MB/s</span>
+              </div>
+            </div>
+
+            ${device.approved ? `
+              <div class="bandwidth-control">
+                <div class="slider-label">
+                  <span>Bandwidth Limit</span>
+                  <span id="bandwidth-value-${device.id}">${mbLimit} MB/s</span>
+                </div>
+                <input 
+                  type="range" 
+                  class="slider" 
+                  min="0.1" 
+                  max="100" 
+                  step="0.1" 
+                  value="${mbLimit}"
+                  id="bandwidth-slider-${device.id}"
+                  onchange="setBandwidth('${device.id}', this.value)"
+                >
+                <div class="preset-buttons">
+                  <button class="preset-btn" onclick="setBandwidthPreset('${device.id}', 1)">1 MB</button>
+                  <button class="preset-btn" onclick="setBandwidthPreset('${device.id}', 5)">5 MB</button>
+                  <button class="preset-btn" onclick="setBandwidthPreset('${device.id}', 10)">10 MB</button>
+                  <button class="preset-btn" onclick="setBandwidthPreset('${device.id}', 0)">Block</button>
+                </div>
+              </div>
+            ` : ''}
+
+            <div class="card-buttons">
+              ${!device.approved ? `
+                <button class="btn btn-success" onclick="approveDevice('${device.id}', ${device.bandwidth_limit})">✓ Approve</button>
+              ` : ''}
+              <button class="btn btn-danger" onclick="denyDevice('${device.id}')">✕ Deny</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Render error
+    function renderError(message) {
+      document.getElementById('device-list').innerHTML = `
+        <div style="grid-column: 1/-1;">
+          <div class="card" style="background: #1e293b80; border-color: #ef444480;">
+            <p style="color: #ef4444; margin: 0;">
+              <strong>⚠️ Error:</strong> ${message}
+            </p>
+            <p style="color: #94a3b8; font-size: 13px; margin-top: 8px; margin-bottom: 0;">
+              Make sure the daemon is running: <code style="background: #0f172a; padding: 2px 6px; border-radius: 3px;">cargo run --release</code>
+            </p>
+          </div>
+        </div>
+      `;
+    }
+
+    // Show QR code modal
+    async function showQrCode() {
+      document.getElementById('qr-modal').style.display = 'flex';
+      const qrContent = document.getElementById('qr-content');
+
+      try {
+        const data = await invoke('http_get_qr');
+        
+        if (!data.qr_image) {
+          throw new Error('Invalid QR response');
+        }
+
+        const img = document.createElement('img');
+        img.src = data.qr_image;
+        img.style.cssText = 'width: 300px; height: 300px; border-radius: 8px; border: 2px solid #334155;';
+        img.onload = () => notify('✓ QR code loaded', 'success');
+        img.onerror = () => {
+          throw new Error('Failed to load QR image');
+        };
+
+        qrContent.innerHTML = '';
+        qrContent.appendChild(img);
+      } catch (err) {
+        qrContent.innerHTML = `
+          <div style="color: #ef4444; text-align: center; padding: 20px;">
+            <p><strong>⚠️ Failed to load QR code</strong></p>
+            <p style="font-size: 12px; margin-top: 8px; color: #cbd5e1;">${err.message}</p>
+          </div>
+        `;
+        notify(`QR Error: ${err.message}`, 'error');
+      }
+    }
+
+    // Close QR modal
+    function closeQrModal() {
+      document.getElementById('qr-modal').style.display = 'none';
+    }
+
+    // Approve device
+    async function approveDevice(deviceId, defaultBandwidth) {
+      try {
+        const bandwidthMb = (defaultBandwidth / 1_000_000) || 10;
+        await invoke('http_approve_device', {
+          deviceId: deviceId,
+          bandwidthMb: bandwidthMb
+        });
+        notify('✓ Device approved', 'success');
+        await loadDevices();
+      } catch (err) {
+        const errorMsg = typeof err === 'string' ? err : err.message || err;
+        notify(`Failed to approve: ${errorMsg}`, 'error');
+        console.error('Approval error:', err);
+      }
+    }
+
+    // Deny device
+    async function denyDevice(deviceId) {
+      if (!confirm('Remove this device?')) return;
+
+      try {
+        await invoke('http_deny_device', { deviceId: deviceId });
+        notify('✓ Device removed', 'success');
+        await loadDevices();
+      } catch (err) {
+        const errorMsg = typeof err === 'string' ? err : err.message || err;
+        notify(`Failed to deny: ${errorMsg}`, 'error');
+        console.error('Deny error:', err);
+      }
+    }
+
+    // Set bandwidth
+    async function setBandwidth(deviceId, mbpsValue) {
+      const bytesPerSec = parseFloat(mbpsValue) * 1_000_000;
+      document.getElementById(`bandwidth-value-${deviceId}`).textContent = Math.round(mbpsValue * 10) / 10 + ' MB/s';
+
+      try {
+        await invoke('http_set_bandwidth', {
+          deviceId: deviceId,
+          bytesPerSec: Math.round(bytesPerSec)
+        });
+      } catch (err) {
+        const errorMsg = typeof err === 'string' ? err : err.message || err;
+        notify(`Failed to set bandwidth: ${errorMsg}`, 'error');
+        console.error('Bandwidth error:', err);
+      }
+    }
+
+    // Set bandwidth preset
+    function setBandwidthPreset(deviceId, mbps) {
+      const slider = document.getElementById(`bandwidth-slider-${deviceId}`);
+      if (slider) {
+        slider.value = mbps;
+        setBandwidth(deviceId, mbps);
+      }
+    }
+
+    // Connect to SSE event stream
+    function connectToEventStream() {
+      try {
+        eventSource = new EventSource(`${DAEMON_URL}/events`);
+
+        eventSource.addEventListener('update', (e) => {
+          try {
+            const event = JSON.parse(e.data);
+            handleStreamEvent(event);
+          } catch (err) {
+            console.error('Parse event error:', err);
+          }
+        });
+
+        eventSource.onerror = () => {
+          console.log('Event stream disconnected');
+          eventSource.close();
+          setTimeout(connectToEventStream, 3000);
+        };
+      } catch (err) {
+        console.log('Event stream not available');
+      }
+    }
+
+    // Handle SSE events
+    function handleStreamEvent(event) {
+      console.log('Stream event:', event);
+
+      if (event.type === 'device_pending') {
+        showApprovalPopup(event.data.device);
+        notify(`📱 New device: ${event.data.device.device_name}`, 'info');
+      } else if (event.type === 'device_approved') {
+        notify('✓ Device connected', 'success');
+        loadDevices();
+      }
+    }
+
+    // Show approval popup
+    function showApprovalPopup(device) {
+      if (pendingApprovals[device.id]) return;
+      pendingApprovals[device.id] = true;
+
+      const container = document.getElementById('approval-popup-container');
+      const popup = document.createElement('div');
+      popup.id = `popup-${device.id}`;
+      popup.style.cssText = `
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 999;
+        animation: slideIn 0.3s ease;
+      `;
+
+      popup.innerHTML = `
+        <div class="approval-popup">
+          <h2>📱 New Device Wants to Join</h2>
+          
+          <div style="background: #0f172a; padding: 12px; border-radius: 6px; margin: 16px 0; font-size: 13px;">
+            <div style="margin-bottom: 8px;">
+              <span style="color: #94a3b8;">Device:</span>
+              <span>${device.device_name || 'Unknown'}</span>
+            </div>
+            <div style="margin-bottom: 8px;">
+              <span style="color: #94a3b8;">IP:</span>
+              <span>${device.ip}</span>
+            </div>
+            <div>
+              <span style="color: #94a3b8;">Platform:</span>
+              <span>${device.platform}</span>
+            </div>
+          </div>
+
+          <div class="approval-buttons">
+            <button class="btn btn-success" onclick="approveDevicePopup('${device.id}', this.parentElement.parentElement.parentElement)">
+              ✓ Approve
+            </button>
+            <button class="btn btn-danger" onclick="denyDevicePopup('${device.id}', this.parentElement.parentElement.parentElement)">
+              ✕ Deny
+            </button>
+          </div>
+        </div>
+      `;
+
+      container.appendChild(popup);
+
+      setTimeout(() => {
+        popup.style.opacity = '0';
+        popup.style.transition = 'opacity 0.3s';
+        setTimeout(() => {
+          popup.remove();
+          delete pendingApprovals[device.id];
+        }, 300);
+      }, 10000);
+    }
+
+    // Approve from popup
+    async function approveDevicePopup(deviceId, popup) {
+      await approveDevice(deviceId, 10_000_000);
+      popup.remove();
+      delete pendingApprovals[deviceId];
+    }
+
+    // Deny from popup
+    async function denyDevicePopup(deviceId, popup) {
+      await denyDevice(deviceId);
+      popup.remove();
+      delete pendingApprovals[deviceId];
+    }
+  </script>
+</body>
+</html>

@@ -1,8 +1,6 @@
 // Header Component
 // ================
 
-import React from 'react'
-
 interface HeaderProps {
   onMenuToggle: () => void
 }
