@@ -71,6 +71,20 @@ body {
   background: var(--bg-secondary);
 }
 
+.settings-button {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 0.375rem;
+  transition: background 0.2s;
+}
+
+.settings-button:hover {
+  background: var(--bg-secondary);
+}
+
 .header-title {
   font-size: 1.5rem;
   font-weight: 700;

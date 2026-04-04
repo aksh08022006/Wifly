@@ -60,6 +60,51 @@ pub struct QrResponse {
 
 // ============ HTTP Handlers ============
 
+/// GET / - Root page with daemon info
+pub async fn root_handler() -> impl IntoResponse {
+    let html = r#"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetShaper Daemon</title>
+  <style>
+    body { font-family: sans-serif; margin: 40px; background: #0f172a; color: #e2e8f0; }
+    h1 { color: #3b82f6; }
+    .endpoint { background: #1e293b; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #3b82f6; }
+    code { background: #475569; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>🔒 NetShaper Daemon</h1>
+  <p>The daemon is running and ready to pair devices!</p>
+  
+  <h2>Available Endpoints:</h2>
+  <div class="endpoint">
+    <strong>GET /qr</strong> - Get QR code image for pairing
+  </div>
+  <div class="endpoint">
+    <strong>GET /pair?token=XXX</strong> - Pairing page (scan QR to open)
+  </div>
+  <div class="endpoint">
+    <strong>GET /health</strong> - Health check
+  </div>
+  <div class="endpoint">
+    <strong>GET /devices</strong> - List all paired devices
+  </div>
+  <div class="endpoint">
+    <strong>GET /stats</strong> - Real-time bandwidth statistics
+  </div>
+  <div class="endpoint">
+    <strong>GET /events</strong> - SSE event stream for dashboard
+  </div>
+</body>
+</html>"#;
+    
+    (axum::http::StatusCode::OK, 
+     axum::response::Html(html)).into_response()
+}
+
 /// GET /health - Health check
 pub async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
@@ -412,10 +457,14 @@ pub async fn approve_device(
     if let Some(device) = registry.approve_device(&id, bandwidth_bytes) {
         drop(registry);
         
-        // Send WFP command
-        let _ = state.bandwidth_tx.send(BandwidthCommand::Update {
-            ip: device.ip,
-            bytes_per_sec: bandwidth_bytes,
+        // Update token bucket for this device (async, non-blocking)
+        let device_ip = device.ip;
+        let device_name = device.device_name.clone();
+        let buckets = state.token_buckets.clone();
+        
+        tokio::spawn(async move {
+            crate::wfp_bridge::set_bandwidth(buckets, device_ip, bandwidth_bytes).await;
+            info!("Approved device {} with limit {} bytes/sec", device_name, bandwidth_bytes);
         });
         
         // Broadcast SSE event
@@ -440,8 +489,21 @@ pub async fn deny_device(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let mut registry = state.registry.lock().await;
-    if registry.deny_device(&id) {
+    if let Some(device) = registry.get_by_id(&id) {
+        let device_ip = device.ip;
+        let device_name = device.device_name.clone();
         drop(registry);
+        
+        // Block the device in token bucket
+        let buckets = state.token_buckets.clone();
+        tokio::spawn(async move {
+            crate::wfp_bridge::block_device(buckets, device_ip).await;
+            info!("Blocked device {}", device_name);
+        });
+        
+        // Now update registry
+        let mut registry = state.registry.lock().await;
+        registry.deny_device(&id);
         
         // Broadcast SSE event
         let event = DashboardEvent::DeviceDenied { device_id: id.clone() };
@@ -466,10 +528,15 @@ pub async fn set_bandwidth(
     if let Some(device) = registry.update_bandwidth(&id, req.bytes_per_sec) {
         drop(registry);
         
-        // Send WFP command
-        let _ = state.bandwidth_tx.send(BandwidthCommand::Update {
-            ip: device.ip,
-            bytes_per_sec: req.bytes_per_sec,
+        // Update token bucket for this device (async, non-blocking)
+        let device_ip = device.ip;
+        let bytes_per_sec = req.bytes_per_sec;
+        let device_name = device.device_name.clone();
+        let buckets = state.token_buckets.clone();
+        
+        tokio::spawn(async move {
+            crate::wfp_bridge::set_bandwidth(buckets, device_ip, bytes_per_sec).await;
+            info!("Bandwidth updated for {} to {} bytes/sec", device_name, bytes_per_sec);
         });
         
         info!("Bandwidth updated for {}: {} bytes/sec", device.device_name, req.bytes_per_sec);
@@ -478,6 +545,72 @@ pub async fn set_bandwidth(
     
     (StatusCode::NOT_FOUND,
      Json(serde_json::json!({"status": "device_not_found"}))
+    ).into_response()
+}
+
+/// POST /api/devices/add-by-ip - Register a device by manual IP input
+pub async fn add_device_by_ip(
+    State(state): State<std::sync::Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    // Parse IP from payload
+    let ip_str = match payload.get("ip").and_then(|v| v.as_str()) {
+        Some(ip) => ip,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "invalid_ip"}))
+            ).into_response();
+        }
+    };
+
+    // Parse IP address
+    let ip: Ipv4Addr = match ip_str.parse() {
+        Ok(ip) => ip,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "invalid_ip", "message": "Invalid IPv4 address format"}))
+            ).into_response();
+        }
+    };
+
+    // Check if device already exists
+    let registry = state.registry.lock().await;
+    if let Some(existing) = registry.get_by_ip(ip) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "status": "device_exists",
+                "message": format!("Device {} already registered", existing.device_name)
+            }))
+        ).into_response();
+    }
+    drop(registry);
+
+    // Add pending device to registry
+    let mut registry = state.registry.lock().await;
+    let device = registry.add_pending_device(
+        ip,
+        "Unknown".to_string(),
+        ip.to_string(),
+    );
+    drop(registry);
+
+    // Broadcast SSE event for new pending device
+    let event = DashboardEvent::DevicePending { device: device.clone() };
+    let _ = state.event_tx.send(event);
+
+    info!("Device registered by IP: {} ({})", ip, device.id);
+    
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "status": "registered",
+            "device_id": device.id,
+            "ip": device.ip,
+            "message": "Device registered as pending. Approve from dashboard to enable."
+        }))
     ).into_response()
 }
 

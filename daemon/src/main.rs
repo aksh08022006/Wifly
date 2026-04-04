@@ -1,15 +1,22 @@
 mod registry;
 mod http;
+mod wfp_bridge;
+mod stats_listener;
+mod token_bucket;
+mod pipe_server;
 
 use axum::{
     routing::{post, put},
     Router,
 };
 use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tower_http::cors::CorsLayer;
 use tracing_subscriber;
 use registry::{DeviceRegistry, QrCodeData, BandwidthCommand, DashboardEvent};
+use token_bucket::TokenBucket;
 use uuid::Uuid;
 use chrono::Utc;
 
@@ -19,6 +26,7 @@ pub struct AppState {
     pub qr_data: Arc<Mutex<Option<QrCodeData>>>,
     pub event_tx: broadcast::Sender<DashboardEvent>,
     pub bandwidth_tx: mpsc::Sender<BandwidthCommand>,
+    pub token_buckets: Arc<Mutex<HashMap<Ipv4Addr, TokenBucket>>>,
 }
 
 #[tokio::main]
@@ -49,29 +57,37 @@ async fn main() {
     let qr_data_mutex = Arc::new(Mutex::new(Some(qr_data.clone())));
     let (event_tx, _) = broadcast::channel(100);
     let (bandwidth_tx, mut bandwidth_rx) = mpsc::channel(100);
+    let token_buckets = Arc::new(Mutex::new(HashMap::<Ipv4Addr, TokenBucket>::new()));
 
     let state = Arc::new(AppState {
         registry,
         qr_data: qr_data_mutex.clone(),
         event_tx,
         bandwidth_tx,
+        token_buckets: token_buckets.clone(),
     });
 
-    // Spawn bandwidth command handler (placeholder - will connect to WFP)
+    // Spawn named pipe server (talks to WFP kernel driver)
+    tokio::spawn({
+        let buckets = token_buckets.clone();
+        async move {
+            pipe_server::run_pipe_server(buckets).await;
+        }
+    });
+
+    // Spawn bandwidth command handler
     tokio::spawn(async move {
         while let Some(cmd) = bandwidth_rx.recv().await {
             match cmd {
                 BandwidthCommand::Update { ip, bytes_per_sec } => {
                     tracing::info!("Bandwidth update for {}: {} bytes/sec", ip, bytes_per_sec);
-                    // TODO: Send to WFP kernel driver
+                    // Bandwidth is managed directly through token_buckets now
                 }
                 BandwidthCommand::Block { ip } => {
                     tracing::info!("Blocking device: {}", ip);
-                    // TODO: Send to WFP kernel driver
                 }
                 BandwidthCommand::Unblock { ip } => {
                     tracing::info!("Unblocking device: {}", ip);
-                    // TODO: Send to WFP kernel driver
                 }
             }
         }
@@ -79,6 +95,7 @@ async fn main() {
 
     // Build router
     let app = Router::new()
+        .route("/", axum::routing::get(http::root_handler))
         .route("/health", axum::routing::get(http::health_check))
         .route("/qr", axum::routing::get(http::get_qr))
         .route("/pair", axum::routing::get(http::get_pair_page).post(http::post_pair))
@@ -86,6 +103,7 @@ async fn main() {
         .route("/devices/:id/approve", post(http::approve_device))
         .route("/devices/:id/deny", post(http::deny_device))
         .route("/devices/:id/bandwidth", put(http::set_bandwidth))
+        .route("/api/devices/add-by-ip", post(http::add_device_by_ip))
         .route("/stats", axum::routing::get(http::get_stats))
         .route("/events", axum::routing::get(http::event_stream))
         .layer(CorsLayer::permissive())
